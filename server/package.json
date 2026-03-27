@@ -1,0 +1,32 @@
+{
+  "name": "streamnode-server",
+  "version": "5.2.0",
+  "description": "StreamNode — Android to Browser live audio relay (TypeScript server)",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "ts-node --transpile-only server.ts",
+    "dev:watch": "nodemon --watch src --watch server.ts --ext ts --exec \"ts-node --transpile-only server.ts\"",
+    "build": "tsc",
+    "prebuild": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "start": "node dist/server.js",
+    "check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && echo Lint OK",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "firebase-admin": "^12.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.37",
+    "@types/ws": "^8.5.10",
+    "nodemon": "^3.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

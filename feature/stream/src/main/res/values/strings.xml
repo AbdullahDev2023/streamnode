@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StreamNode</string>
+    <string name="notif_channel_name">StreamNode Streaming</string>
+    <string name="notif_channel_desc">Active while streaming audio to PC</string>
+    <string name="accessibility_service_description">Allows StreamNode to inject remote touch input for screen share control.</string>
+    <string name="screen_share_start">Share Screen</string>
+    <string name="screen_share_stop">Stop Sharing</string>
+    <string name="screen_share_active">● Screen Sharing</string>
+</resources>

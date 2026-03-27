@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AuraCast — Dashboard</title>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--card:#22263a;--accent:#6c63e6;--green:#06d6a0;--yellow:#ffd166;--red:#ef476f;--orange:#f4895f;--txt:#fff;--txt2:#888;--border:#2e3251}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:32px 20px 60px}
+header h1{font-size:1.9rem;font-weight:700;letter-spacing:.06em;text-align:center}
+.subtitle{color:var(--txt2);font-size:.82rem;margin-bottom:36px;text-align:center;margin-top:4px}
+.grid{width:100%;max-width:960px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:12px}
+.card.streaming{border-color:var(--green)}.card.ready{border-color:var(--accent)}.card.offline{border-color:#ffd16640;opacity:.85}
+.card.bat-critical{animation:borderFlash .6s step-end infinite}
+@keyframes borderFlash{0%,100%{border-color:var(--red)}50%{border-color:transparent}}
+.card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.card-name{font-size:1rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.badge{padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid transparent}
+.badge.streaming{color:var(--green);border-color:var(--green);background:#06d6a012}
+.badge.ready{color:var(--accent);border-color:var(--accent);background:#6c63e612}
+.badge.offline{color:var(--yellow);border-color:#ffd16660;background:#ffd1660d}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.dot.blink{animation:blink 1s step-end infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.meta{display:flex;gap:16px;font-size:.78rem;color:var(--txt2);font-family:monospace;flex-wrap:wrap}
+.meta span{color:var(--txt);font-weight:600}
+.hint{font-size:.73rem;text-align:center;padding:2px 0}
+.hint.ready{color:var(--accent)}.hint.offline{color:var(--yellow)}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{flex:1;min-width:60px;padding:9px 4px;border-radius:10px;border:none;font-size:.82rem;font-weight:600;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.btn:hover:not(:disabled){opacity:.8}.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-listen{background:var(--accent);color:#fff}
+.btn-start{background:var(--green);color:#0f1117}
+.btn-stop{background:var(--red);color:#fff}
+.btn-wake{background:var(--yellow);color:#1a1a1a}
+.btn-fb{background:#ffca2820;color:#ffca28;border:1px solid #ffca2855;flex:0 0 auto;padding:9px 10px}
+.btn-fb:hover:not(:disabled){background:#ffca2838}
+.fb-sent{font-size:.7rem;color:#ffca28;text-align:center;min-height:16px}
+/* ── Admin panel ── */
+.admin-toggle{font-size:.75rem;color:var(--txt2);cursor:pointer;text-align:center;padding:2px 0;user-select:none}
+.admin-toggle:hover{color:var(--txt)}
+.admin-panel{display:none;flex-direction:column;gap:8px;padding:12px;background:#0f1117;border-radius:10px;border:1px solid #2e3251}
+.admin-panel.open{display:flex}
+.admin-section-label{font-size:.7rem;color:var(--txt2);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
+.admin-badge-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px}
+.admin-badge{font-size:.68rem;padding:2px 8px;border-radius:8px;font-weight:700}
+.admin-badge.active{background:#06d6a022;color:var(--green);border:1px solid #06d6a055}
+.admin-badge.inactive{background:#ef476f18;color:var(--red);border:1px solid #ef476f44}
+.admin-row{display:flex;gap:6px;flex-wrap:wrap}
+.abtn{padding:7px 10px;border-radius:8px;border:none;font-size:.76rem;font-weight:600;cursor:pointer;font-family:inherit;transition:opacity .15s;flex:1;min-width:70px}
+.abtn:hover:not(:disabled){opacity:.8}.abtn:disabled{opacity:.4;cursor:not-allowed}
+.abtn-lock{background:#6c63e630;color:var(--accent);border:1px solid #6c63e655}
+.abtn-camera{background:#ffd16620;color:var(--yellow);border:1px solid #ffd16650}
+.abtn-reboot{background:#f4895f20;color:var(--orange);border:1px solid #f4895f50}
+.abtn-wipe{background:#ef476f20;color:var(--red);border:1px solid #ef476f55}
+.admin-slider-row{display:flex;align-items:center;gap:8px;font-size:.76rem;color:var(--txt2)}
+.admin-slider-row input[type=range]{flex:1;accent-color:var(--accent)}
+.admin-slider-row span{min-width:26px;color:var(--txt);font-family:monospace;font-weight:700}
+.admin-set-btn{padding:5px 10px;border-radius:7px;border:1px solid #2e3251;background:#22263a;color:var(--txt);font-size:.74rem;cursor:pointer;font-family:inherit}
+.admin-set-btn:hover{background:#2e3251}
+/* ── Recording controls (Feature 3) ── */
+.rec-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.abtn-rec-start{background:#ef476f20;color:#ef476f;border:1px solid #ef476f55}
+.abtn-rec-stop{background:#06d6a020;color:var(--green);border:1px solid #06d6a055}
+.rec-status{font-size:.72rem;color:var(--txt2);display:flex;align-items:center;gap:5px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-dot{width:8px;height:8px;border-radius:50%;background:#ef476f;flex-shrink:0;animation:blink .8s step-end infinite}
+.rec-timer{font-family:monospace;color:#ef476f;font-weight:700}
+.rec-download{font-size:.7rem;color:var(--accent);text-decoration:underline;cursor:pointer}
+.quality-select{flex:1;padding:5px 8px;border-radius:7px;border:1px solid #2e3251;background:#22263a;color:var(--txt);font-size:.76rem;cursor:pointer;font-family:inherit}
+.quality-select:focus{outline:1px solid var(--accent)}
+.admin-msg{font-size:.7rem;text-align:center;min-height:14px;color:var(--green)}
+.empty{text-align:center;color:var(--txt2);font-size:.9rem;margin-top:60px;width:100%}
+.empty .big{font-size:2.5rem;margin-bottom:10px}
+.refresh{position:fixed;bottom:16px;right:20px;font-size:.72rem;color:var(--txt2)}
+.refresh span{color:var(--green)}
+/* Admin secret input — removed (auth-free mode) */
+/* ── Feature 4: Telemetry strip ── */
+.telemetry-strip{display:flex;gap:10px;flex-wrap:wrap;padding:8px 10px;background:#0f1117;border-radius:10px;border:1px solid #2e3251;font-size:.75rem;align-items:center}
+.telemetry-strip .t-item{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.telemetry-strip .t-val{font-weight:700;font-family:monospace;color:var(--txt)}
+.t-bat-warn .t-val{color:var(--red)}
+.t-bat-critical .t-val{color:var(--red);animation:blink .5s step-end infinite}
+.t-cpu-warm .t-val{color:var(--orange)}
+.t-stale .t-val{color:var(--txt2)}
+.telemetry-strip .t-label{color:var(--txt2)}
+/* ── Feature 6: Snapshot ── */
+.abtn-snapshot{background:#a78bfa20;color:#a78bfa;border:1px solid #a78bfa55}
+/* ── Feature 7: Torch ── */
+.abtn-torch-on{background:#ffd16620;color:var(--yellow);border:1px solid #ffd16660;transition:background .2s,box-shadow .2s}
+.abtn-torch-on.lit{background:#ffd16640;color:#ffe080;border-color:var(--yellow);box-shadow:0 0 10px #ffd16660}
+.abtn-torch-off{background:#22263a;color:var(--txt2);border:1px solid #2e3251}
+.snapshot-modal-overlay{display:none;position:fixed;inset:0;background:#000b;z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:16px}
+.snapshot-modal-overlay.open{display:flex}
+.snapshot-modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;max-width:92vw;max-height:90vh;display:flex;flex-direction:column;gap:12px;align-items:center}
+.snapshot-modal img{max-width:80vw;max-height:65vh;border-radius:10px;display:block}
+.snapshot-modal-btns{display:flex;gap:10px}
+.snapshot-close{padding:8px 18px;border-radius:8px;border:1px solid #2e3251;background:#22263a;color:var(--txt);cursor:pointer;font-size:.82rem;font-family:inherit}
+.snapshot-close:hover{background:#2e3251}
+.snapshot-dl{padding:8px 18px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-size:.82rem;font-weight:600}
+/* ── Feature 9: Metrics chart ── */
+.metrics-chart-wrap{padding:10px;background:#0f1117;border-radius:10px;border:1px solid #2e3251;margin-top:2px}
+.metrics-chart-wrap canvas{display:block;width:100%!important;height:90px!important}
+.metrics-chart-title{font-size:.68rem;color:var(--txt2);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+.metrics-chart-title span{font-weight:400;font-family:monospace;color:var(--txt)}
+/* ── Feature 9: Location badge ── */
+.loc-badge{display:inline-flex;align-items:center;gap:5px;font-size:.73rem;color:var(--txt2);padding:3px 8px;border-radius:8px;border:1px solid #2e3251;background:#0f1117;white-space:nowrap}
+.loc-badge .loc-val{font-weight:700;font-family:monospace;color:var(--txt)}
+.loc-badge.loc-stale .loc-val{color:var(--txt2)}
+/* ── Feature 9: Map section ── */
+#map-section{width:100%;max-width:960px;margin:18px 0 0}
+#map-section h2{font-size:.88rem;font-weight:700;color:var(--txt2);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px}
+#deviceMap{height:360px;border-radius:14px;border:1px solid var(--border);overflow:hidden}
+/* ── Feature 1: VBR / Frame-size panel ── */
+.vbr-badge{display:inline-block;font-size:.65rem;padding:1px 6px;border-radius:5px;font-weight:700;vertical-align:middle;margin-left:4px}
+.vbr-badge.vbr-on{background:#06d6a022;color:var(--green);border:1px solid #06d6a055}
+.vbr-badge.vbr-off{background:#ffd16620;color:var(--yellow);border:1px solid #ffd16655}
+/* ── Feature 8: Advanced Audio Config grid ── */
+.audio-config-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:.76rem}
+.audio-config-grid label{color:var(--txt2);white-space:nowrap}
+.audio-config-grid input[type=number]{width:100%;padding:4px 7px;border-radius:7px;border:1px solid #2e3251;background:#22263a;color:var(--txt);font-size:.76rem;font-family:inherit}
+.audio-config-grid input[type=range]{width:100%;accent-color:var(--accent)}
+.audio-config-grid .acg-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.audio-config-grid .acg-val{font-family:monospace;color:var(--txt);font-weight:700;min-width:24px}
+.audio-config-grid input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+.acg-apply-btn{width:100%;margin-top:4px;padding:7px;border-radius:8px;border:1px solid var(--accent);background:#6c63e620;color:var(--accent);font-size:.78rem;font-weight:700;cursor:pointer;font-family:inherit}
+.acg-apply-btn:hover{background:#6c63e640}
+/* ── Phase 3: Transport badges ── */
+.badge.transport-webrtc{color:#06d6a0;border-color:#06d6a0;background:#06d6a010}
+.badge.transport-ws{color:var(--yellow);border-color:#ffd16660;background:#ffd1660d}
+.badge.transport-nego{color:var(--accent);border-color:#6c63e660;background:#6c63e610;animation:blink 1.2s step-end infinite}
+.badge.transport-fallback{color:var(--orange);border-color:#f4895f60;background:#f4895f10}
+.badge.transport-unknown{color:var(--txt2);border-color:#2e3251;background:transparent}
+/* ── Phase 3: Transport selector in admin panel ── */
+.abtn-transport-webrtc{background:#06d6a020;color:#06d6a0;border:1px solid #06d6a055}
+.abtn-transport-ws{background:#ffd16620;color:var(--yellow);border:1px solid #ffd16650}
+.abtn-transport-auto{background:#6c63e620;color:var(--accent);border:1px solid #6c63e655}
+</style>
+</head>
+<body>
+<header><h1>🎙 AuraCast</h1></header>
+<p class="subtitle">All devices • refreshes every 2 s</p>
+
+<div class="grid" id="grid"></div>
+<!-- Feature 9: Device location map -->
+<div id="map-section">
+  <h2>📍 Device Locations</h2>
+  <div id="deviceMap"></div>
+</div>
+<!-- Feature 6: Snapshot modal -->
+<div class="snapshot-modal-overlay" id="snapshotOverlay" onclick="closeSnapshot(event)">
+  <div class="snapshot-modal">
+    <div style="font-size:.88rem;font-weight:700;color:var(--txt2)">📸 Snapshot</div>
+    <img id="snapshotImg" src="" alt="snapshot" />
+    <div class="snapshot-modal-btns">
+      <a id="snapshotDl" class="snapshot-dl" download="snapshot.jpg" href="#">⬇ Download</a>
+      <button class="snapshot-close" onclick="document.getElementById('snapshotOverlay').classList.remove('open')">✕ Close</button>
+    </div>
+  </div>
+</div>
+<div class="refresh">Updated <span id="upd">—</span></div>
+<script>
+'use strict';
+// ── Firebase init ─────────────────────────────────────────────────────────────
+firebase.initializeApp({
+  apiKey:"AIzaSyCGDP96k8yaqmQg9kzcGqjPRMjBEz88EGc",authDomain:"auracast-df815.firebaseapp.com",
+  databaseURL:"https://auracast-df815-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:"auracast-df815",storageBucket:"auracast-df815.firebasestorage.app",
+  messagingSenderId:"283586693826",appId:"1:283586693826:web:479ceb723259cf1e25895b"
+});
+const fbDb = firebase.database();
+
+function genId() {
+  return (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID() : Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+}
+// Auth-free mode — no secret needed (adminAuth middleware always permits)
+function getSecret() { return ''; }
+
+// ── Admin API call ────────────────────────────────────────────────────────────
+async function adminCall(deviceId, path, extraParams = {}) {
+  const params = new URLSearchParams(extraParams).toString();
+  const url = `/admin/${deviceId}/${path}${params ? '?' + params : ''}`;
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  return res.json();
+}
+
+async function adminGet(deviceId, path) {
+  const res = await fetch(`/admin/${deviceId}/${path}`);
+  return res.json();
+}
+
+// ── Fetch admin status badge from Firebase via Admin API ──────────────────────
+const adminStatusCache = {};
+async function fetchAdminStatus(id) {
+  try {
+    const data = await adminGet(id, 'status');
+    if (data) adminStatusCache[id] = data;
+  } catch (_) {}
+}
+
+// ── Generic admin button handler ──────────────────────────────────────────────
+async function adminAction(deviceId, action, params, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await adminCall(deviceId, action, params);
+    btn.textContent = r?.ok ? '✅' : '❌';
+    showAdminMsg(btn, r?.ok ? `✅ ${r.channel === 'firebase' ? '🔥 Queued' : '⚡ Sent'}` : `❌ ${r?.error||'failed'}`);
+  } catch (e) { btn.textContent = '❌'; showAdminMsg(btn, '❌ ' + e.message); }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+function showAdminMsg(btn, msg) {
+  const panel = btn.closest('.admin-panel');
+  if (!panel) return;
+  const el = panel.querySelector('.admin-msg');
+  if (el) { el.textContent = msg; setTimeout(() => { el.textContent = ''; }, 3500); }
+}
+
+// ── Wipe with confirmation dialog ─────────────────────────────────────────────
+async function wipeDevice(deviceId, btn) {
+  if (!confirm('⚠️ FACTORY RESET this device?\n\nAll data will be erased. Type "WIPE" to confirm.')) return;
+  const typed = prompt('Type WIPE to confirm factory reset:');
+  if (typed !== 'WIPE') { showAdminMsg(btn, '❌ Cancelled'); return; }
+  await adminAction(deviceId, 'wipe', { confirm: 'WIPE' }, btn);
+}
+
+// ── Feature 7: Torch toggle ───────────────────────────────────────────────────
+const torchState = {}; // deviceId → boolean (true = ON)
+
+async function toggleTorch(deviceId, onBtn, offBtn) {
+  const enable    = !torchState[deviceId];
+  const onBtn2    = onBtn;
+  const offBtn2   = offBtn;
+  onBtn2.disabled  = true;
+  offBtn2.disabled = true;
+  try {
+    const res = await fetch(`/admin/${deviceId}/torch?on=${enable}`, { method: 'POST' });
+    const r = await res.json();
+    if (r?.ok || r?.commandId) {
+      torchState[deviceId] = enable;
+      applyTorchUI(deviceId);
+    } else {
+      showAdminMsg(onBtn, `❌ ${r?.error || 'torch failed'}`);
+    }
+  } catch (e) { showAdminMsg(onBtn, '❌ ' + e.message); }
+  onBtn2.disabled  = false;
+  offBtn2.disabled = false;
+}
+
+function applyTorchUI(deviceId) {
+  const onBtn  = document.getElementById(`torch-on-${deviceId}`);
+  const offBtn = document.getElementById(`torch-off-${deviceId}`);
+  if (!onBtn || !offBtn) return;
+  const isOn = !!torchState[deviceId];
+  onBtn.classList.toggle('lit', isOn);
+  onBtn.textContent  = isOn ? '🔦 ON'  : '🔦 ON';
+  offBtn.textContent = isOn ? '💡 OFF' : '💡 OFF';
+}
+
+// ── Firebase streaming commands ───────────────────────────────────────────────
+async function sendFirebaseCmd(id, action, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const commandId = genId();
+    await fbDb.ref('users/'+id+'/control').set({
+      commandId, command: action, ts: Date.now(), source: 'firebase',
+      processed: false, processedAt: null,
+    });
+    btn.textContent = '🔥✅';
+    const el = btn.closest('.card')?.querySelector('.fb-sent');
+    if (el) { el.textContent = '🔥 Queued in Firebase'; setTimeout(() => { el.textContent=''; }, 4000); }
+  } catch(e) { btn.textContent='❌'; }
+  setTimeout(() => { btn.textContent=orig; btn.disabled=false; }, 2500);
+}
+
+async function sendControl(id, action, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await fetch(`/stream-control?id=${encodeURIComponent(id)}&action=${action}`,{method:'POST'});
+    const j = await r.json();
+    btn.textContent = j.ok ? `✅ ${j.channel==='firebase'?'🔥':'⚡'}` : '❌';
+  } catch { btn.textContent='❌'; }
+  setTimeout(() => { btn.textContent=orig; btn.disabled=false; }, 2500);
+}
+
+// ── Quality selector ──────────────────────────────────────────────────────────
+async function setQuality(deviceId, selectEl, btn) {
+  const level = selectEl.value;
+  const orig  = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await adminCall(deviceId, 'set-quality', { level });
+    if (r?.ok) {
+      btn.textContent = '✅';
+      showAdminMsg(btn, `✅ Quality → ${level.replace('_',' ')} ${r.channel==='firebase'?'🔥 Queued':'⚡ Sent'}`);
+    } else {
+      btn.textContent = '❌';
+      showAdminMsg(btn, `❌ ${r?.error || 'Failed'}`);
+    }
+  } catch (e) {
+    btn.textContent = '❌';
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+// ── Sample Rate selector (Feature 2) ─────────────────────────────────────────
+async function setSampleRate(deviceId, selectEl, btn) {
+  const rate = parseInt(selectEl.value, 10);
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await adminCall(deviceId, 'set-sample-rate', { rate });
+    if (r?.ok) {
+      btn.textContent = '✅';
+      const label = { 8000:'8 kHz', 16000:'16 kHz', 32000:'32 kHz', 48000:'48 kHz' }[rate] || rate + ' Hz';
+      showAdminMsg(btn, `✅ Sample rate → ${label} ${r.channel==='firebase'?'🔥 Queued':'⚡ Sent'}`);
+    } else {
+      btn.textContent = '❌';
+      showAdminMsg(btn, `❌ ${r?.error || 'Failed'}`);
+    }
+  } catch (e) {
+    btn.textContent = '❌';
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+// ── Feature 1: VBR + Frame-size ───────────────────────────────────────────────
+// Reads the VBR checkbox and frame-ms select for `deviceId`, then POSTs both
+// settings to the phone in two sequential admin commands.
+async function setVbrAndFrame(deviceId, btn) {
+  const vbrEl    = document.getElementById('vbr-' + deviceId);
+  const frameEl  = document.getElementById('frameMs-' + deviceId);
+  if (!vbrEl || !frameEl) return;
+
+  const vbrEnabled = vbrEl.checked;
+  const frameMs    = frameEl.value;
+  const orig       = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+
+  try {
+    // Send VBR toggle
+    const r1 = await adminCall(deviceId, 'set-vbr', { enabled: String(vbrEnabled) });
+    // Send frame-size
+    const r2 = await adminCall(deviceId, 'set-frame-ms', { ms: frameMs });
+
+    const ok = (r1?.ok || r1?.commandId) && (r2?.ok || r2?.commandId);
+    if (ok) {
+      btn.textContent = '✅';
+      const ch1 = r1.channel === 'firebase' ? '🔥' : '⚡';
+      showAdminMsg(btn,
+        `${ch1} VBR=${vbrEnabled ? 'on' : 'off'} · frame=${frameMs}ms applied`);
+      // Update the live VBR badge on the card if present
+      const badge = document.getElementById('vbr-badge-' + deviceId);
+      if (badge) {
+        badge.textContent   = vbrEnabled ? 'VBR' : 'CBR';
+        badge.className     = 'vbr-badge ' + (vbrEnabled ? 'vbr-on' : 'vbr-off');
+      }
+    } else {
+      btn.textContent = '❌';
+      showAdminMsg(btn, `❌ ${r1?.error || r2?.error || 'Failed'}`);
+    }
+  } catch (e) {
+    btn.textContent = '❌';
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+// ── Feature 3: VOX / Silence Gate ─────────────────────────────────────────────
+// Reads the VOX checkbox and threshold slider for `deviceId`, then POSTs to
+// POST /admin/:id/set-vox  { enabled: bool, threshold: number }
+async function setVox(deviceId, btn) {
+  const enabledEl   = document.getElementById('vox-' + deviceId);
+  const thresholdEl = document.getElementById('vox-thr-' + deviceId);
+  if (!enabledEl || !thresholdEl) return;
+
+  const enabled   = enabledEl.checked;
+  const threshold = parseFloat(thresholdEl.value);
+  const orig      = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+
+  try {
+    const r = await adminCall(deviceId, 'set-vox', { enabled, threshold });
+    if (r?.ok || r?.commandId) {
+      btn.textContent = '✅';
+      const ch = r.channel === 'firebase' ? '🔥' : '⚡';
+      showAdminMsg(btn, `${ch} VOX ${enabled ? `ON (thr=${threshold})` : 'OFF'}`);
+    } else {
+      btn.textContent = '❌';
+      showAdminMsg(btn, `❌ ${r?.error || 'Failed'}`);
+    }
+  } catch (e) {
+    btn.textContent = '❌';
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+// ── Feature 4: Internal Audio / Media Capture ────────────────────────────────
+// Reads the internal-audio enable checkbox and mix-with-mic checkbox, then
+// POSTs to POST /admin/:id/set-internal-audio { enabled: bool, mixWithMic: bool }
+async function setInternalAudio(deviceId, btn) {
+  const enabledEl    = document.getElementById('int-audio-' + deviceId);
+  const mixWithMicEl = document.getElementById('int-mix-'   + deviceId);
+  if (!enabledEl || !mixWithMicEl) return;
+
+  const enabled    = enabledEl.checked;
+  const mixWithMic = mixWithMicEl.checked;
+  const orig       = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+
+  try {
+    const r = await fetch(`/admin/${deviceId}/set-internal-audio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled, mixWithMic }),
+    }).then(res => res.json());
+
+    if (r?.ok || r?.commandId) {
+      btn.textContent = '✅';
+      const ch = r.channel === 'firebase' ? '🔥' : '⚡';
+      const label = !enabled
+        ? 'Internal audio OFF'
+        : mixWithMic ? 'Internal audio ON (+ mic)' : 'Internal audio ON (only)';
+      showAdminMsg(btn, `${ch} ${label}`);
+    } else {
+      btn.textContent = '❌';
+      showAdminMsg(btn, `❌ ${r?.error || 'Failed'}`);
+    }
+  } catch (e) {
+    btn.textContent = '❌';
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+// ── Feature 6: Snapshot ──────────────────────────────────────────────────────
+async function takeSnapshot(deviceId, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Capturing…';
+  try {
+    const res = await fetch(`/admin/${deviceId}/snapshot`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'unknown error' }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const img = document.getElementById('snapshotImg');
+    const dl  = document.getElementById('snapshotDl');
+    img.src = objectUrl;
+    dl.href = objectUrl;
+    dl.download = `snap_${deviceId.slice(0,8)}_${Date.now()}.jpg`;
+    document.getElementById('snapshotOverlay').classList.add('open');
+    btn.textContent = '✅';
+  } catch (e) {
+    btn.textContent = '❌';
+    showAdminMsg(btn, '❌ Snapshot: ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+}
+
+function closeSnapshot(e) {
+  // Close only on overlay background click, not on modal content
+  if (e.target === document.getElementById('snapshotOverlay')) {
+    document.getElementById('snapshotOverlay').classList.remove('open');
+  }
+}
+
+// ── Recording (Feature 3) ─────────────────────────────────────────────────────
+const recState = {}; // deviceId → { active, filePath, startedAt, timerInterval }
+
+async function startRecording(deviceId, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const res = await fetch(`/admin/${deviceId}/record/start`, { method: 'POST' });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || 'start failed');
+    recState[deviceId] = { active: true, filePath: r.filePath, startedAt: r.startedAt, timerInterval: null };
+    updateRecUI(deviceId);
+    showAdminMsg(btn, '⏺ Recording started');
+  } catch (e) {
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  btn.textContent = orig; btn.disabled = false;
+}
+
+async function stopRecording(deviceId, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const res = await fetch(`/admin/${deviceId}/record/stop`, { method: 'POST' });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || 'stop failed');
+    if (recState[deviceId]) {
+      clearInterval(recState[deviceId].timerInterval);
+      recState[deviceId].active = false;
+    }
+    updateRecUI(deviceId, r.filePath, r.durationSec);
+    showAdminMsg(btn, `⏹ Saved (${fmtTime(r.durationSec || 0)})`);
+  } catch (e) {
+    showAdminMsg(btn, '❌ ' + e.message);
+  }
+  btn.textContent = orig; btn.disabled = false;
+}
+
+function updateRecUI(deviceId, filePath, durationSec) {
+  const st       = recState[deviceId];
+  const startBtn = document.getElementById(`rec-start-${deviceId}`);
+  const stopBtn  = document.getElementById(`rec-stop-${deviceId}`);
+  const statusEl = document.getElementById(`rec-status-${deviceId}`);
+  if (!startBtn || !stopBtn || !statusEl) return;
+
+  if (st?.active) {
+    startBtn.style.display = 'none';
+    stopBtn.style.display  = '';
+    // Start elapsed timer
+    clearInterval(st.timerInterval);
+    st.timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - st.startedAt) / 1000);
+      statusEl.innerHTML = `<span class="rec-dot"></span><span class="rec-timer">${fmtTime(elapsed)}</span>`;
+    }, 1000);
+  } else {
+    stopBtn.style.display  = 'none';
+    startBtn.style.display = '';
+    if (filePath) {
+      statusEl.innerHTML = `<span style="color:var(--green)">✅ ${durationSec != null ? fmtTime(durationSec) : ''}</span>
+        <a class="rec-download" href="/recordings/${encodeURIComponent(filePath.split(/[\\/]/).pop())}" download>⬇ Download</a>`;
+    } else {
+      statusEl.textContent = '';
+    }
+  }
+}
+
+function fmtTime(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;return h?`${h}h ${m}m`:m?`${m}m ${ss}s`:`${ss}s`;}
+
+function toggleAdmin(id){const p=document.getElementById('admin-'+id);if(p){p.classList.toggle('open');if(p.classList.contains('open'))fetchAdminStatus(id).then(()=>updateAdminBadges(id));}}
+
+function updateAdminBadges(id) {
+  const st = adminStatusCache[id];
+  if (!st) return;
+  const row = document.getElementById('admin-badges-'+id);
+  if (!row) return;
+  row.innerHTML =
+    `<span class="admin-badge ${st.isDeviceAdmin?'active':'inactive'}">${st.isDeviceAdmin?'✓':'✗'} Device Admin</span>` +
+    `<span class="admin-badge ${st.isDeviceOwner?'active':'inactive'}">${st.isDeviceOwner?'✓':'✗'} Device Owner</span>`;
+  const rebootBtn = document.getElementById('abtn-reboot-'+id);
+  if (rebootBtn) rebootBtn.disabled = !st.isDeviceOwner;
+}
+
+// ── Phase 3: Transport badge helpers ─────────────────────────────────────────
+const TRANSPORT_BADGE = {
+  webrtc_p2p:      { text: '⚡ P2P',     cls: 'transport-webrtc'   },
+  websocket_relay: { text: '📡 Relay',    cls: 'transport-ws'       },
+  negotiating:     { text: '🔄 ICE…',    cls: 'transport-nego'     },
+  fallback:        { text: '⚠ Fallback', cls: 'transport-fallback' },
+};
+
+function transportBadgeText(mode) {
+  return TRANSPORT_BADGE[mode]?.text || '? Transport';
+}
+function transportBadgeCls(mode) {
+  return 'badge ' + (TRANSPORT_BADGE[mode]?.cls || 'transport-unknown');
+}
+
+function updateTransportBadge(deviceId, mode) {
+  const badge = document.getElementById(`transport-badge-${deviceId}`);
+  if (!badge) return;
+  badge.textContent = transportBadgeText(mode);
+  badge.className   = transportBadgeCls(mode);
+}
+
+async function setTransport(deviceId, mode, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await fetch(`/admin/${deviceId}/set-transport?mode=${mode}`, { method: 'POST' });
+    const j = await r.json();
+    if (j?.ok) {
+      btn.textContent = '✅';
+      showAdminMsg(btn, `✅ Transport → ${mode} ${j.channel === 'firebase' ? '🔥 Queued' : '⚡ Sent'}`);
+      updateTransportBadge(deviceId, mode === 'websocket' ? 'websocket_relay' : 'negotiating');
+    } else {
+      btn.textContent = '❌';
+      showAdminMsg(btn, `❌ ${j?.error || 'Failed'}`);
+    }
+  } catch (e) { btn.textContent = '❌'; showAdminMsg(btn, '❌ ' + e.message); }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+}
+
+// ── Card builder ──────────────────────────────────────────────────────────────
+function buildCard(s) {
+  const connected  = s.phoneConnected;
+  const streaming  = connected && s.streamingActive;
+  const cardClass  = streaming ? 'streaming' : connected ? 'ready' : 'offline';
+  const badge      = streaming
+    ? `<span class="badge streaming"><span class="dot blink"></span>LIVE</span>`
+    : connected ? `<span class="badge ready"><span class="dot"></span>Ready</span>`
+    : `<span class="badge offline"><span class="dot"></span>Offline</span>`;
+  const uptime = s.connectedAt ? fmtTime(Math.floor((Date.now()-s.connectedAt)/1000)) : '—';
+  const offlineFor = (!connected && s.disconnectedAt) ? fmtTime(Math.floor((Date.now()-s.disconnectedAt)/1000))+' ago' : null;
+  const hint = !connected
+    ? `<div class="hint offline">📴 Offline — last seen ${offlineFor||'—'}</div>`
+    : !streaming ? `<div class="hint ready">✅ Connected — click ▶ Start to stream</div>` : '';
+  const playerUrl = `/player?id=${encodeURIComponent(s.id)}`;
+
+  let ctrlBtn = '';
+  if (connected && streaming) {
+    ctrlBtn=`<button class="btn btn-stop" onclick="sendControl('${s.id}','stop',this)">⏹ Stop</button>
+             <button class="btn btn-fb"   onclick="sendFirebaseCmd('${s.id}','stop',this)" title="Firebase">🔥</button>`;
+  } else if (connected) {
+    ctrlBtn=`<button class="btn btn-start" onclick="sendControl('${s.id}','start',this)">▶ Start</button>
+             <button class="btn btn-fb"    onclick="sendFirebaseCmd('${s.id}','start',this)" title="Firebase">🔥</button>`;
+  } else {
+    ctrlBtn=`<button class="btn btn-fb" style="flex:1" onclick="sendFirebaseCmd('${s.id}','start',this)">🔥 Wake via Firebase</button>`;
+  }
+
+  const adminPanel = `
+    <div class="admin-toggle" onclick="toggleAdmin('${s.id}')">🛡 Admin Controls ▾</div>
+    <div class="admin-panel" id="admin-${s.id}">
+      <div class="admin-badge-row" id="admin-badges-${s.id}">
+        <span class="admin-badge inactive">? Device Admin</span>
+        <span class="admin-badge inactive">? Device Owner</span>
+      </div>
+      <div class="admin-section-label">Quick Actions</div>
+      <div class="admin-row">
+        <button class="abtn abtn-lock"     onclick="adminAction('${s.id}','lock',{},this)">🔒 Lock</button>
+        <button class="abtn abtn-camera"   onclick="adminAction('${s.id}','camera',{enable:'false'},this)">📷 Cam Off</button>
+        <button class="abtn abtn-camera"   onclick="adminAction('${s.id}','camera',{enable:'true'},this)">📷 Cam On</button>
+        <button class="abtn abtn-reboot"   id="abtn-reboot-${s.id}" disabled onclick="adminAction('${s.id}','reboot',{},this)">🔁 Reboot</button>
+        <button class="abtn abtn-snapshot" onclick="takeSnapshot('${s.id}',this)">📸 Snapshot</button>
+        <button class="abtn abtn-wipe"     onclick="wipeDevice('${s.id}',this)">💣 Wipe</button>
+      </div>
+      <div class="admin-section-label">Torch / Flashlight</div>
+      <div class="admin-row">
+        <button class="abtn abtn-torch-on"  id="torch-on-${s.id}"
+                onclick="toggleTorch('${s.id}',this,document.getElementById('torch-off-${s.id}'))">🔦 ON</button>
+        <button class="abtn abtn-torch-off" id="torch-off-${s.id}"
+                onclick="toggleTorch('${s.id}',document.getElementById('torch-on-${s.id}'),this)">💡 OFF</button>
+      </div>
+      <div class="admin-section-label">Brightness</div>
+      <div class="admin-slider-row">
+        ☀️ <input type="range" min="0" max="255" value="128" id="br-${s.id}" oninput="document.getElementById('brv-${s.id}').textContent=this.value">
+        <span id="brv-${s.id}">128</span>
+        <button class="admin-set-btn" onclick="adminAction('${s.id}','brightness',{value:document.getElementById('br-${s.id}').value},this)">Set</button>
+      </div>
+      <div class="admin-section-label">Volume (Media)</div>
+      <div class="admin-slider-row">
+        🔊 <input type="range" min="0" max="15" value="8" id="vol-${s.id}" oninput="document.getElementById('volv-${s.id}').textContent=this.value">
+        <span id="volv-${s.id}">8</span>
+        <button class="admin-set-btn" onclick="adminAction('${s.id}','volume',{value:document.getElementById('vol-${s.id}').value},this)">Set</button>
+      </div>
+      <div class="admin-section-label">Audio Quality</div>
+      <div class="admin-slider-row">
+        🎚️
+        <select class="quality-select" id="quality-${s.id}">
+          <option value="HIGH_QUALITY">HD — 192 kbps (default)</option>
+          <option value="MEDIUM">MD — 96 kbps (balanced)</option>
+          <option value="LOW">LQ — 32 kbps (poor signal)</option>
+        </select>
+        <button class="admin-set-btn" onclick="setQuality('${s.id}',document.getElementById('quality-${s.id}'),this)">Set</button>
+      </div>
+      <div class="admin-section-label">Sample Rate</div>
+      <div class="admin-slider-row">
+        🎵
+        <select class="quality-select" id="sr-${s.id}">
+          <option value="8000">8 kHz — voice only (~8 kbps)</option>
+          <option value="16000">16 kHz — wideband voice (~16 kbps)</option>
+          <option value="32000">32 kHz — near full-band (~32 kbps)</option>
+          <option value="48000" selected>48 kHz — full quality (default)</option>
+        </select>
+        <button class="admin-set-btn" onclick="setSampleRate('${s.id}',document.getElementById('sr-${s.id}'),this)">Set</button>
+      </div>
+      <div class="admin-section-label">Opus VBR / Frame Size <span style="font-size:.65rem;color:#6c63e6;font-weight:400">[Feature 1]</span></div>
+      <div class="admin-slider-row" style="flex-wrap:wrap;gap:8px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:.76rem;color:var(--txt2);cursor:pointer">
+          <input type="checkbox" id="vbr-${s.id}" checked
+            style="accent-color:var(--accent);width:14px;height:14px">
+          VBR
+        </label>
+        <select class="quality-select" id="frameMs-${s.id}" style="flex:1;min-width:140px">
+          <option value="2">2.5 ms — ultra-low latency</option>
+          <option value="5">5 ms</option>
+          <option value="10">10 ms — low latency</option>
+          <option value="20" selected>20 ms — recommended</option>
+          <option value="40">40 ms</option>
+          <option value="60">60 ms — max compression</option>
+        </select>
+        <button class="admin-set-btn" onclick="setVbrAndFrame('${s.id}',this)">Apply</button>
+      </div>
+      <div class="admin-section-label">VOX / Silence Gate <span style="font-size:.65rem;color:#06d6a0;font-weight:400">[Feature 3]</span></div>
+      <div class="admin-slider-row" style="flex-wrap:wrap;gap:8px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:.76rem;color:var(--txt2);cursor:pointer">
+          <input type="checkbox" id="vox-${s.id}"
+            style="accent-color:var(--green);width:14px;height:14px">
+          Enable VOX Gate
+        </label>
+      </div>
+      <div class="admin-slider-row">
+        🎚 Threshold RMS
+        <input type="range" min="50" max="500" step="10" value="150" id="vox-thr-${s.id}"
+          oninput="document.getElementById('vox-thr-v-${s.id}').textContent=this.value">
+        <span id="vox-thr-v-${s.id}" style="min-width:28px;color:var(--txt);font-family:monospace;font-weight:700">150</span>
+        <button class="admin-set-btn" onclick="setVox('${s.id}',this)">Set</button>
+      </div>
+      <div class="admin-section-label">Internal Audio Capture <span style="font-size:.65rem;color:#a78bfa;font-weight:400">[Feature 4 · API 29+]</span></div>
+      <div class="admin-slider-row" style="flex-wrap:wrap;gap:8px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:.76rem;color:var(--txt2);cursor:pointer">
+          <input type="checkbox" id="int-audio-${s.id}"
+            style="accent-color:#a78bfa;width:14px;height:14px">
+          Capture Device Audio (media / games)
+        </label>
+      </div>
+      <div class="admin-slider-row" style="flex-wrap:wrap;gap:8px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:.76rem;color:var(--txt2);cursor:pointer">
+          <input type="checkbox" id="int-mix-${s.id}" checked
+            style="accent-color:#a78bfa;width:14px;height:14px">
+          Mix with Mic (uncheck = internal audio only)
+        </label>
+        <button class="admin-set-btn" onclick="setInternalAudio('${s.id}',this)">Apply</button>
+      </div>
+      <div class="admin-section-label">Recording</div>
+      <div class="rec-row">
+        <button class="abtn abtn-rec-start" id="rec-start-${s.id}" onclick="startRecording('${s.id}',this)">⏺ Record</button>
+        <button class="abtn abtn-rec-stop"  id="rec-stop-${s.id}"  onclick="stopRecording('${s.id}',this)" style="display:none">⏹ Stop</button>
+        <div class="rec-status" id="rec-status-${s.id}"></div>
+      </div>
+      <div class="admin-section-label">Transport Mode <span style="font-size:.65rem;color:#06d6a0;font-weight:400">[Phase 3]</span></div>
+      <div class="admin-row">
+        <button class="abtn abtn-transport-webrtc" onclick="setTransport('${s.id}','webrtc',this)">⚡ WebRTC P2P</button>
+        <button class="abtn abtn-transport-ws"     onclick="setTransport('${s.id}','websocket',this)">📡 WebSocket</button>
+        <button class="abtn abtn-transport-auto"   onclick="setTransport('${s.id}','auto',this)">🔁 Auto</button>
+      </div>
+      <div style="font-size:.68rem;color:var(--txt2);padding:2px 0">
+        Current: <span id="transport-rtt-${s.id}">RTT —</span> &nbsp;·&nbsp; ICE: <span id="transport-ice-${s.id}">—</span>
+      </div>
+      <div class="admin-msg"></div>
+    </div>`;
+
+  return `
+    <div class="card ${cardClass}">
+      <div class="card-top"><div class="card-name" title="${s.id}">${s.displayName}</div>${badge}<span id="transport-badge-${s.id}" class="${transportBadgeCls(s.transportMode)}">${transportBadgeText(s.transportMode)}</span></div>
+      <div class="meta">
+        <div>Listeners <span>${s.listeners}</span></div>
+        <div>${connected?'Uptime':'Offline'} <span>${connected?uptime:(offlineFor||'—')}</span></div>
+        <div>Data <span>${s.kbRelayed} KB</span></div>
+        <div>Opus <span id="vbr-badge-${s.id}" class="vbr-badge vbr-on">VBR</span></div>
+      </div>
+      ${hint}
+      <div class="btn-row">
+        <button class="btn btn-listen" onclick="window.open('${playerUrl}','_blank')">${streaming?'🎧 Listen':'▶ Open Player'}</button>
+        ${ctrlBtn}
+      </div>
+      <div class="btn-row" style="margin-top:-4px">
+        <a class="btn" style="background:#6c63e620;color:#a78bfa;border:1px solid #6c63e650;text-align:center;text-decoration:none;padding:7px 4px;border-radius:10px;font-size:.78rem;font-weight:600"
+           href="/screen-view?id=${encodeURIComponent(s.id)}" target="_blank">🖥 Screen</a>
+        <a class="btn" style="background:#06d6a020;color:#06d6a0;border:1px solid #06d6a050;text-align:center;text-decoration:none;padding:7px 4px;border-radius:10px;font-size:.78rem;font-weight:600"
+           href="/camera-front-view?id=${encodeURIComponent(s.id)}" target="_blank">📷 Front Cam</a>
+        <a class="btn" style="background:#f4895f20;color:#f4895f;border:1px solid #f4895f50;text-align:center;text-decoration:none;padding:7px 4px;border-radius:10px;font-size:.78rem;font-weight:600"
+           href="/camera-back-view?id=${encodeURIComponent(s.id)}" target="_blank">📷 Back Cam</a>
+        <a class="btn" style="background:#a78bfa20;color:#a78bfa;border:1px solid #a78bfa50;text-align:center;text-decoration:none;padding:7px 4px;border-radius:10px;font-size:.78rem;font-weight:600"
+           href="/pip?id=${encodeURIComponent(s.id)}" target="_blank">📷 PiP View</a>
+      </div>
+      <div class="fb-sent"></div>
+      ${adminPanel}
+      <div id="telem-${s.id}">${buildTelemetryStrip(telemetryStore[s.id] || s.telemetry || null)}</div>
+      <div class="metrics-chart-wrap" id="metrics-chart-${s.id}">
+        <div class="metrics-chart-title">📊 Streaming Metrics
+          <span><span style="color:#6c63e6">■</span> <span id="mc-kbps-${s.id}">—</span>&nbsp;&nbsp;<span style="color:#06d6a0">■</span> <span id="mc-fps-${s.id}">—</span></span>
+        </div>
+        <canvas id="metrics-canvas-${s.id}" height="90"></canvas>
+      </div>
+      <div id="loc-${s.id}">${buildLocationBadge(locationStore[s.id] || s.location || null)}</div>
+    </div>`;
+}
+
+async function refresh() {
+  try {
+    const list = await fetch('/streams').then(r=>r.json());
+    document.getElementById('upd').textContent = new Date().toLocaleTimeString();
+    const grid = document.getElementById('grid');
+    if (!list.length) {
+      grid.innerHTML='<div class="empty"><div class="big">📡</div>No devices yet.<br>Open AuraCast on an Android device.</div>';
+      return;
+    }
+    // Seed telemetry store from REST response (last-known values on page load)
+    list.forEach(s => {
+      if (s.telemetry && s.telemetry.updatedAt) {
+        telemetryStore[s.id] = telemetryStore[s.id] || { ...s.telemetry, id: s.id, type: 'telemetry' };
+      }
+      // Feature 9 — seed location store from REST response
+      if (s.location && s.location.ts) {
+        locationStore[s.id] = locationStore[s.id] || { ...s.location, id: s.id, type: 'location' };
+      }
+    });
+    // Preserve open admin panels across refreshes
+    const openPanels = new Set([...document.querySelectorAll('.admin-panel.open')].map(p=>p.id.replace('admin-','')));
+    // Feature 9: destroy old Chart instances before rebuilding grid (prevents canvas reuse errors)
+    Object.keys(metricsCharts).forEach(id => { try { metricsCharts[id]?.destroy(); } catch(_){} delete metricsCharts[id]; });
+    grid.innerHTML = list.map(buildCard).join('');
+    openPanels.forEach(id => {
+      const p = document.getElementById('admin-'+id);
+      if (p) { p.classList.add('open'); updateAdminBadges(id); }
+    });
+    // Phase 4: always seed transport badge + RTT/ICE from REST response on every refresh
+    list.forEach(s => {
+      updateTransportBadge(s.id, s.transportMode);
+      const rttEl = document.getElementById(`transport-rtt-${s.id}`);
+      const iceEl = document.getElementById(`transport-ice-${s.id}`);
+      if (rttEl) rttEl.textContent = s.transportRttMs != null ? `RTT ${s.transportRttMs}ms` : 'RTT —';
+      if (iceEl) iceEl.textContent = s.iceState || '—';
+    });
+    // Feature 9 — re-apply cached locations to rebuilt card badges
+    Object.entries(locationStore).forEach(([id, loc]) => applyLocation(id, loc));
+    // Feature 9 — redraw rolling metrics charts after grid rebuild
+    Object.keys(metricsHistory).forEach(id => updateMetricsChart(id));
+    // Feature 4 — maintain per-device live WebSocket for telemetry pushes
+    syncLiveWs(list);
+  } catch {
+    document.getElementById('grid').innerHTML='<div class="empty"><div class="big">⚠️</div>Cannot reach server.</div>';
+  }
+}
+// ── Feature 4: Telemetry ─────────────────────────────────────────────────────
+const telemetryStore = {}; // deviceId → latest telemetry object
+
+// ── Feature 9: Metrics history + Chart.js rolling charts ────────────────────
+const metricsHistory  = {}; // deviceId → [{ t, kbps, fps }]
+const metricsCharts   = {}; // deviceId → Chart instance
+const MAX_METRICS_HISTORY = 30;
+
+/** Plays a short 880 Hz beep for low-battery warnings. */
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
+  } catch (_) {}
+}
+
+/** Feature 9: Create or update the rolling kbps/FPS chart for a device card. */
+function updateMetricsChart(deviceId) {
+  const canvas = document.getElementById(`metrics-canvas-${deviceId}`);
+  if (!canvas) return;
+  const history = metricsHistory[deviceId] || [];
+  const labels  = history.map((_, i) => i === history.length - 1 ? 'now' : `-${history.length - 1 - i}`);
+  const kbpsData = history.map(h => h.kbps ?? null);
+  const fpsData  = history.map(h => h.fps  ?? null);
+
+  // Latest values for the header
+  const latestKbps = kbpsData.filter(v => v !== null).at(-1);
+  const latestFps  = fpsData.filter(v => v !== null).at(-1);
+  const hdrKbps = document.getElementById(`mc-kbps-${deviceId}`);
+  const hdrFps  = document.getElementById(`mc-fps-${deviceId}`);
+  if (hdrKbps) hdrKbps.textContent = latestKbps != null ? `${latestKbps.toFixed(1)} kbps` : '—';
+  if (hdrFps)  hdrFps.textContent  = latestFps  != null ? `${latestFps.toFixed(1)} fps`   : '—';
+
+  if (metricsCharts[deviceId]) {
+    const chart = metricsCharts[deviceId];
+    chart.data.labels          = labels;
+    chart.data.datasets[0].data = kbpsData;
+    chart.data.datasets[1].data = fpsData;
+    chart.update('none');
+    return;
+  }
+
+  // Create new Chart instance
+  metricsCharts[deviceId] = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'kbps', data: kbpsData, borderColor: '#6c63e6', backgroundColor: '#6c63e620',
+          tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+        { label: 'fps',  data: fpsData,  borderColor: '#06d6a0', backgroundColor: '#06d6a015',
+          tension: 0.3, pointRadius: 0, fill: false, yAxisID: 'y2' },
+      ],
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+      scales: {
+        x:  { display: false },
+        y:  { position: 'left',  grid: { color: '#2e325133' }, ticks: { color: '#888', font: { size: 9 } }, min: 0 },
+        y2: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#06d6a0', font: { size: 9 } }, min: 0 },
+      },
+    },
+  });
+}
+
+/** Build the HTML for the telemetry strip given a telemetry object (may be null). */
+function buildTelemetryStrip(t) {
+  if (!t || t.updatedAt == null) {
+    return `<div class="telemetry-strip" style="color:var(--txt2);font-size:.73rem">📡 No telemetry yet — updates every 60 s</div>`;
+  }
+  const staleMs = Date.now() - t.updatedAt;
+  const isStale = staleMs > 3 * 60 * 1000;
+  const stale   = isStale ? ' t-stale' : '';
+
+  // Battery
+  const bat = t.batteryLevel;
+  let batClass = stale;
+  if (!isStale && bat != null && bat < 10)       batClass = ' t-bat-critical';
+  else if (!isStale && bat != null && bat < 20)  batClass = ' t-bat-warn';
+  const batIcon      = bat == null ? '🔋' : bat > 80 ? '🔋' : bat > 30 ? '🪫' : '🔴';
+  const chargingMark = t.charging ? ' ⚡' : '';
+  const batTxt       = bat != null ? `${bat}%${chargingMark}` : '—';
+
+  // Signal
+  const sig    = t.signalDbm;
+  const sigTxt = sig != null ? `${sig}` : '—';
+
+  // CPU temp
+  const temp      = t.cpuTempC;
+  const tempClass = (!isStale && temp != null && temp > 60) ? ' t-cpu-warm' : stale;
+  const tempTxt   = temp != null && temp >= 0 ? `${temp.toFixed(1)}°C` : '—';
+
+  // Wi-Fi
+  const ssid = t.wifiSsid || 'N/A';
+
+  // Feature 9: RAM
+  const ram  = (t.usedRamMB != null && t.totalRamMB != null)
+    ? `${t.usedRamMB}/${t.totalRamMB} MB` : '—';
+
+  // Feature 9: Network type + link speed
+  const netType  = t.netType  || '—';
+  const linkSpd  = (t.linkSpeedMbps != null && t.linkSpeedMbps >= 0)
+    ? ` ${t.linkSpeedMbps} Mbps` : '';
+  const netTxt   = netType + linkSpd;
+
+  // Feature 9: Screen on/off
+  const screenTxt = t.screenOn != null ? (t.screenOn ? '🟢 On' : '⚫ Off') : '—';
+
+  // Feature 9: Streaming FPS / kbps / uptime
+  const fpsTxt    = t.streamFps    != null ? t.streamFps.toFixed(1)    : '—';
+  const kbpsTxt   = t.streamKbps   != null ? t.streamKbps.toFixed(1)   : '—';
+  const uptimeTxt = t.streamUptimeSec != null ? fmtTime(t.streamUptimeSec) : '—';
+
+  // Feature 3: VOX drop rate
+  const voxDrop    = t.voxDropRate != null ? `${(t.voxDropRate * 100).toFixed(0)}%` : null;
+  const voxThr     = t.voxThreshold != null ? ` thr=${t.voxThreshold}` : '';
+  const voxEnabled = t.voxEnabled;
+
+  const ago = staleMs < 90_000 ? `${Math.floor(staleMs/1000)}s ago` : `${Math.floor(staleMs/60000)}m ago`;
+
+  return `<div class="telemetry-strip" title="Last update: ${ago}">
+    <span class="t-item${batClass}">${batIcon} <span class="t-label">Bat</span>&nbsp;<span class="t-val">${batTxt}</span></span>
+    <span class="t-item${stale}">📶 <span class="t-label">Sig</span>&nbsp;<span class="t-val">${sigTxt}</span></span>
+    <span class="t-item${tempClass}">🌡 <span class="t-label">CPU</span>&nbsp;<span class="t-val">${tempTxt}</span></span>
+    <span class="t-item${stale}">📡 <span class="t-label">WiFi</span>&nbsp;<span class="t-val">${ssid}</span></span>
+    <span class="t-item${stale}">🧠 <span class="t-label">RAM</span>&nbsp;<span class="t-val">${ram}</span></span>
+    <span class="t-item${stale}">🌐 <span class="t-label">Net</span>&nbsp;<span class="t-val">${netTxt}</span></span>
+    <span class="t-item${stale}">🖥 <span class="t-label">Screen</span>&nbsp;<span class="t-val">${screenTxt}</span></span>
+    <span class="t-item${stale}">🎞 <span class="t-label">FPS</span>&nbsp;<span class="t-val">${fpsTxt}</span></span>
+    <span class="t-item${stale}">📦 <span class="t-label">kbps</span>&nbsp;<span class="t-val">${kbpsTxt}</span></span>
+    <span class="t-item${stale}">⏱ <span class="t-label">Up</span>&nbsp;<span class="t-val">${uptimeTxt}</span></span>
+    ${voxDrop != null ? `<span class="t-item${stale}" title="VOX gate${voxThr}">🔕 <span class="t-label">VOX${voxEnabled ? '' : ' off'}</span>&nbsp;<span class="t-val">${voxDrop} gated</span></span>` : ''}
+    <span style="margin-left:auto;color:var(--txt2);font-size:.68rem">${ago}</span>
+  </div>`;
+}
+
+/** Apply the latest telemetry for a device to its already-rendered card. */
+function applyTelemetry(deviceId, t) {
+  const el = document.getElementById(`telem-${deviceId}`);
+  if (!el) return;
+  el.innerHTML = buildTelemetryStrip(t);
+  // Flash card border on critical battery
+  const card = el.closest('.card');
+  if (card) {
+    if (t && t.batteryLevel != null && t.batteryLevel < 10) {
+      card.classList.add('bat-critical');
+    } else {
+      card.classList.remove('bat-critical');
+    }
+  }
+}
+
+/** Handle a live telemetry push from the stats WebSocket broadcast. */
+function handleTelemetryMsg(msg) {
+  if (msg.type !== 'telemetry') return;
+  const id = msg.id;
+  if (!id) return;
+  const prev = telemetryStore[id];
+  telemetryStore[id] = msg;
+  // Beep on first-time crossing the warning thresholds
+  if (typeof msg.batteryLevel === 'number') {
+    if (msg.batteryLevel < 20 && (!prev || prev.batteryLevel >= 20)) playBeep();
+  }
+  applyTelemetry(id, msg);
+  // Feature 9: push into rolling metrics history and redraw chart
+  if (!metricsHistory[id]) metricsHistory[id] = [];
+  metricsHistory[id].push({ t: Date.now(), kbps: msg.streamKbps ?? null, fps: msg.streamFps ?? null });
+  if (metricsHistory[id].length > MAX_METRICS_HISTORY) metricsHistory[id].shift();
+  updateMetricsChart(id);
+}
+
+refresh();
+setInterval(refresh, 2000);
+
+// ── Feature 9: Location store + Leaflet map ──────────────────────────────────
+const locationStore = {}; // deviceId → latest location object
+
+// Initialise Leaflet map (India default centre, zoom 5)
+const deviceMap = L.map('deviceMap').setView([20.59, 78.96], 5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+}).addTo(deviceMap);
+const mapMarkers = {}; // deviceId → L.marker
+
+function deviceName(id) {
+    const card = document.getElementById('loc-' + id);
+    return card?.closest('.card')?.querySelector('.card-name')?.textContent || id.slice(0, 8);
+}
+
+function buildLocationBadge(loc) {
+    if (!loc || loc.lat == null) {
+        return `<div class="loc-badge">📍 <span class="loc-val">No GPS fix yet</span></div>`;
+    }
+    const staleMs = Date.now() - (loc.ts || 0);
+    const isStale = staleMs > 5 * 60 * 1000;
+    const ago = staleMs < 90_000 ? `${Math.floor(staleMs / 1000)}s ago`
+                                 : `${Math.floor(staleMs / 60000)}m ago`;
+    const lat = loc.lat.toFixed(5);
+    const lng = loc.lng.toFixed(5);
+    const acc = loc.accuracy != null ? ` ±${Math.round(loc.accuracy)}m` : '';
+    return `<div class="loc-badge${isStale ? ' loc-stale' : ''}" title="Last fix: ${ago}">
+      📍 <span class="loc-val">${lat}, ${lng}${acc}</span>
+      <span style="font-size:.68rem;margin-left:4px">${ago}</span>
+    </div>`;
+}
+
+function applyLocation(deviceId, loc) {
+    // Update badge
+    const el = document.getElementById(`loc-${deviceId}`);
+    if (el) el.innerHTML = buildLocationBadge(loc);
+    // Update or create map marker
+    if (!loc || loc.lat == null) return;
+    const latlng = [loc.lat, loc.lng];
+    if (mapMarkers[deviceId]) {
+        mapMarkers[deviceId].setLatLng(latlng);
+    } else {
+        mapMarkers[deviceId] = L.marker(latlng)
+            .bindPopup(`<b>${deviceName(deviceId)}</b><br>${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`)
+            .addTo(deviceMap);
+    }
+    mapMarkers[deviceId].getPopup()?.setContent(
+        `<b>${deviceName(deviceId)}</b><br>${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`
+    );
+    deviceMap.panTo(latlng);
+}
+
+function handleLocationMsg(msg) {
+    if (msg.type !== 'location') return;
+    const id = msg.id;
+    if (!id) return;
+    locationStore[id] = msg;
+    applyLocation(id, msg);
+}
+
+// ── Live telemetry via /listen WebSocket (per-device) ─────────────────────────
+// Open one WS per active device; auto-close when device disappears.
+const liveWsMap = {}; // deviceId → WebSocket
+
+function syncLiveWs(deviceList) {
+  const activeIds = new Set(deviceList.map(s => s.id));
+  // Close WS for devices no longer in the list
+  for (const [id, ws] of Object.entries(liveWsMap)) {
+    if (!activeIds.has(id)) { ws.close(); delete liveWsMap[id]; }
+  }
+  // Open WS for newly seen devices
+  for (const s of deviceList) {
+    if (liveWsMap[s.id]) continue; // already open
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/listen?id=${encodeURIComponent(s.id)}`);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'telemetry') { msg.id = s.id; handleTelemetryMsg(msg); }
+        if (msg.type === 'location')  { msg.id = s.id; handleLocationMsg(msg); }
+        if (msg.type === 'alert')     { handleAlertMsg(s.id, msg); }
+        // Phase 3: live transport badge updates
+        if (msg.type === 'transportStatus' && msg.id) {
+          updateTransportBadge(msg.id, msg.mode);
+          const rttEl = document.getElementById(`transport-rtt-${msg.id}`);
+          const iceEl = document.getElementById(`transport-ice-${msg.id}`);
+          if (rttEl) rttEl.textContent = msg.rtt != null ? `RTT ${msg.rtt}ms` : 'RTT —';
+          if (iceEl) iceEl.textContent = msg.iceState || '—';
+        }
+      } catch (_) {}
+    };
+    ws.onclose = () => { delete liveWsMap[s.id]; };
+    liveWsMap[s.id] = ws;
+  }
+}
+
+function handleAlertMsg(deviceId, msg) {
+  // Flash the device name in the card on low-battery alert
+  const card = document.getElementById(`telem-${deviceId}`)?.closest('.card');
+  if (!card) return;
+  if (msg.level === 'critical') {
+    card.classList.add('bat-critical');
+    playBeep();
+  }
+}
+</script>
+</body>
+</html>

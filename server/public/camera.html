@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AuraCast Camera</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d0d;color:#e0e0e0;font-family:system-ui,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  #toolbar{display:flex;align-items:center;gap:12px;padding:8px 14px;background:#1a1a2e;border-bottom:1px solid #2a2a4a;flex-shrink:0}
+  #toolbar h1{font-size:15px;font-weight:600;letter-spacing:.03em;color:#a78bfa}
+  #badge{padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:.06em;background:#333;color:#888}
+  #badge.live{background:#14532d;color:#4ade80}
+  #badge.wait{background:#422006;color:#fb923c}
+  #fps-counter{margin-left:auto;font-size:11px;color:#555;font-variant-numeric:tabular-nums}
+  #facing-badge{font-size:11px;color:#a78bfa;padding:2px 8px;border:1px solid #3d3a6e;border-radius:10px}
+  #canvas-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+  canvas{max-width:100%;max-height:100%;object-fit:contain;display:block}
+  canvas.mirrored{transform:scaleX(-1)}
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);flex-direction:column;gap:14px}
+  #overlay p{font-size:16px;color:#9ca3af}
+  .spinner{width:40px;height:40px;border:3px solid #374151;border-top-color:#a78bfa;border-radius:50%;animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #status-bar{padding:4px 14px;font-size:11px;color:#4b5563;background:#111;border-top:1px solid #1f1f1f;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <h1>AuraCast Camera</h1>
+  <span id="facing-badge">—</span>
+  <span id="badge" class="wait">WAITING</span>
+  <span id="fps-counter">-- fps</span>
+</div>
+<div id="canvas-wrap">
+  <canvas id="screen"></canvas>
+  <div id="overlay"><div class="spinner"></div><p id="overlay-msg">Connecting…</p></div>
+</div>
+<div id="status-bar">Initialising WebCodecs…</div>
+
+<script>
+(function(){
+'use strict';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const params   = new URLSearchParams(location.search);
+const streamId = params.get('id') || '';
+// Derive facing from the URL path: /camera-front-view → front, /camera-back-view → back
+const isFront  = location.pathname.includes('front');
+const facing   = isFront ? 'front' : 'back';
+const watchPath = isFront ? '/camera-front-watch' : '/camera-back-watch';
+const WS_URL   = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${watchPath}?id=${streamId}`;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const canvas      = document.getElementById('screen');
+const ctx2d       = canvas.getContext('2d');
+const overlay     = document.getElementById('overlay');
+const overlayMsg  = document.getElementById('overlay-msg');
+const badge       = document.getElementById('badge');
+const fpsEl       = document.getElementById('fps-counter');
+const statusBar   = document.getElementById('status-bar');
+const facingBadge = document.getElementById('facing-badge');
+
+// ── Apply facing label + mirror for front cam ─────────────────────────────────
+facingBadge.textContent = isFront ? '📷 Front (selfie)' : '📷 Back';
+document.title = `AuraCast ${isFront ? 'Front' : 'Back'} Camera`;
+if (isFront) canvas.classList.add('mirrored');
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let decoder      = null;
+let ws           = null;
+let frameCount   = 0;
+let lastFpsMs    = performance.now();
+let useWebCodecs = false;
+
+// ── FPS counter ───────────────────────────────────────────────────────────────
+setInterval(() => {
+  const now = performance.now();
+  const fps = (frameCount / ((now - lastFpsMs) / 1000)).toFixed(1);
+  fpsEl.textContent = `${fps} fps`;
+  frameCount = 0; lastFpsMs = now;
+}, 1500);
+
+function setStatus(msg){ statusBar.textContent = msg; }
+function showOverlay(msg){ overlay.style.display='flex'; overlayMsg.textContent=msg; }
+function hideOverlay(){ overlay.style.display='none'; }
+function setBadge(live){ badge.className=live?'live':'wait'; badge.textContent=live?'LIVE':'WAITING'; }
+
+// ── WebCodecs decoder ─────────────────────────────────────────────────────────
+function initWebCodecs(){
+  if(!('VideoDecoder' in window)){ return false; }
+  decoder = new VideoDecoder({
+    output(frame){
+      frameCount++;
+      if(canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight){
+        canvas.width  = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      ctx2d.drawImage(frame, 0, 0);
+      frame.close();
+    },
+    error(e){ setStatus('VideoDecoder error: '+e.message); }
+  });
+  decoder.configure({ codec:'avc1.42E01E', optimizeForLatency:true });
+  return true;
+}
+
+// ── Annex-B NAL → VideoDecoder ────────────────────────────────────────────────
+function feedFrame(buf){
+  if(!decoder || decoder.state === 'closed') return;
+  const bytes = new Uint8Array(buf);
+  let isKey   = false;
+  for(let i=0;i<Math.min(bytes.length-4,64);i++){
+    if(bytes[i]===0&&bytes[i+1]===0&&bytes[i+2]===0&&bytes[i+3]===1){
+      const nalType = bytes[i+4] & 0x1F;
+      if(nalType===7||nalType===5){ isKey=true; break; }
+    }
+  }
+  try{
+    decoder.decode(new EncodedVideoChunk({
+      type:      isKey ? 'key' : 'delta',
+      timestamp: performance.now() * 1000,
+      data:      buf,
+    }));
+  }catch(e){ setStatus('decode error: '+e.message); }
+}
+
+// ── MSE fallback ──────────────────────────────────────────────────────────────
+let mseSourceBuffer = null;
+let mseQueue = []; let mseBusy = false;
+
+function initMSE(){
+  if(!('MediaSource' in window)){ setStatus('Neither WebCodecs nor MSE available'); return; }
+  const video = document.createElement('video');
+  video.autoplay = true; video.muted = true;
+  video.style.cssText = 'max-width:100%;max-height:100%;';
+  if(isFront) video.style.transform = 'scaleX(-1)';
+  canvas.replaceWith(video);
+  const ms = new MediaSource();
+  video.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', () => {
+    try{
+      mseSourceBuffer = ms.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+      mseSourceBuffer.mode = 'sequence';
+      mseSourceBuffer.addEventListener('updateend', flushMSE);
+      setStatus('MSE fallback active');
+    }catch(e){ setStatus('MSE addSourceBuffer failed: '+e.message); }
+  });
+}
+
+function feedMSE(buf){ mseQueue.push(buf); flushMSE(); }
+function flushMSE(){
+  if(!mseSourceBuffer||mseSourceBuffer.updating||mseQueue.length===0) return;
+  const next = mseQueue.shift();
+  try{ mseSourceBuffer.appendBuffer(next); }catch(e){ mseQueue=[]; }
+}
+
+// ── WebSocket connection ───────────────────────────────────────────────────────
+let reconnectTimer = null;
+
+function connect(){
+  if(ws && (ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)) return;
+  showOverlay('Connecting to server…');
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('WebSocket connected  |  stream id: '+streamId+'  |  facing: '+facing);
+    useWebCodecs = initWebCodecs();
+    if(!useWebCodecs){ initMSE(); setStatus('WebCodecs unavailable — MSE fallback'); }
+    else { setStatus('WebCodecs active'); }
+  };
+
+  ws.onmessage = (evt) => {
+    if(typeof evt.data === 'string'){
+      try{
+        const msg = JSON.parse(evt.data);
+        if(msg.type==='senderStatus')      { handleSenderStatus(msg.connected); }
+        if(msg.type==='senderDisconnected'){ handleSenderStatus(false); }
+      }catch(_){}
+      return;
+    }
+    if(useWebCodecs){ feedFrame(evt.data); } else { feedMSE(evt.data); }
+  };
+
+  ws.onclose = () => {
+    setBadge(false); showOverlay('Disconnected — reconnecting…');
+    setStatus('WS closed'); scheduleReconnect();
+  };
+  ws.onerror = () => { setStatus('WS error'); scheduleReconnect(); };
+}
+
+function scheduleReconnect(){
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connect, 3000);
+}
+
+// ── WebRTC path ───────────────────────────────────────────────────────────────
+// When no legacy WS sender is present, the phone is using WebRTC.
+// Connect to /signal as a browser peer and render the matching video track.
+let pc         = null;
+let sigWs      = null;
+let webRtcMode = false;
+
+function startWebRTC() {
+  if (webRtcMode) return;
+  webRtcMode = true;
+  setStatus('No legacy sender — switching to WebRTC…');
+  showOverlay('Connecting via WebRTC…');
+
+  const sigUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/signal?id=${streamId}&role=browser`;
+  sigWs = new WebSocket(sigUrl);
+
+  sigWs.onopen = () => setStatus('Signaling WS open');
+  sigWs.onmessage = async (evt) => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch(_) { return; }
+
+    if (msg.type === 'phone-ready' || msg.type === 'welcome') {
+      // Fetch ICE config then create peer connection
+      try {
+        const r    = await fetch('/ice-config');
+        const cfg  = await r.json();
+        pc = new RTCPeerConnection(cfg);
+      } catch(_) {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      }
+
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) sigWs.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+      };
+
+      pc.ontrack = ({ track, streams }) => {
+        if (track.kind !== 'video') return;
+        // For front-camera page: prefer track id containing 'front'; back → 'back'.
+        // Fall back to first video track if IDs don't match (single-camera session).
+        const wantId = facing === 'front' ? 'front' : 'back';
+        if (!track.id.toLowerCase().includes(wantId) && pc._gotTrack) return;
+        pc._gotTrack = true;
+
+        const video = document.createElement('video');
+        video.autoplay = true; video.muted = true; video.playsInline = true;
+        video.style.cssText = 'max-width:100%;max-height:100%;';
+        if (isFront) video.style.transform = 'scaleX(-1)';
+        canvas.replaceWith(video);
+        video.srcObject = streams[0] || new MediaStream([track]);
+        video.play().catch(() => {});
+        hideOverlay(); setBadge(true);
+        setStatus(`WebRTC ${facing} camera active`);
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setBadge(false); showOverlay('WebRTC disconnected');
+        }
+      };
+    }
+
+    if (msg.type === 'offer' && pc) {
+      await pc.setRemoteDescription(new RTCSessionDescription(msg));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sigWs.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+    }
+
+    if (msg.type === 'ice-candidate' && pc) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch(_) {}
+    }
+  };
+
+  sigWs.onclose = () => {
+    if (!webRtcMode) return;
+    setBadge(false); showOverlay('Signaling disconnected — retrying…');
+    setTimeout(startWebRTC, 3000);
+  };
+}
+
+function handleSenderStatus(connected){
+  if(connected){ hideOverlay(); setBadge(true); }
+  else {
+    // Legacy WS sender not present — phone is using WebRTC transport
+    startWebRTC();
+  }
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+if(!streamId){ showOverlay('No stream ID in URL  (?id=…)'); }
+else         { connect(); }
+
+})();
+</script>
+</body>
+</html>

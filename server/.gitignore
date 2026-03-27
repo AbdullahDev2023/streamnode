@@ -1,0 +1,18 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Secrets — NEVER commit these
+.env
+.env.local
+config/serviceAccount.json
+
+# TypeScript build output
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

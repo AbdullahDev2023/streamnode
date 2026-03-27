@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ── Permissions not declared in any library module ───────────────── -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Bug #7 fix: FOREGROUND_SERVICE_CONNECTED_DEVICE removed — StreamingService
+         foregroundServiceType is microphone|mediaProjection|camera only.  Declaring
+         a type permission whose type is not listed in the service tag causes Android 14+
+         strict FGS enforcement to flag (and potentially kill) the service. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- SCHEDULE_EXACT_ALARM: required for API 31-32 exact watchdog alarm.
+         API 33+ is covered by USE_EXACT_ALARM above. Together they ensure the
+         15-min watchdog fires precisely even in Doze on all Android 12+ devices. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Camera — required for front/back camera streaming -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Device Admin — grants DPM lock/wipe/camera/policy control -->
+    <uses-permission android:name="android.permission.MANAGE_DEVICE_ADMINS" />
+    <!-- Write system settings (brightness) — granted automatically as Device Owner -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <!-- Feature 8 — Auto-Start on Boot: receive BOOT_COMPLETED/LOCKED_BOOT_COMPLETED -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Feature 9 — Location Streaming: GPS coordinates to dashboard map -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <application
+        android:name=".StreamNodeApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.StreamNode"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".ui.setup.SetupActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustPan"
+            tools:replace="android:exported">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustPan" />
+
+        <receiver
+            android:name="com.akdevelopers.streamnode.system.BootReceiver"
+            android:directBootAware="true"
+            android:exported="true"
+            tools:replace="android:exported,android:directBootAware">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".system.NetworkChangeReceiver"
+            android:enabled="false"
+            android:exported="false"
+            tools:replace="android:enabled" />
+
+    </application>
+
+</manifest>

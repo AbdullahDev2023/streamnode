@@ -1,0 +1,57 @@
+# ── Gradle ────────────────────────────────────────────────────────────────────
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ── Android Studio ───────────────────────────────────────────────────────────
+*.iml
+.idea/
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+local.properties
+*.xml.bak
+
+# ── Android build outputs ─────────────────────────────────────────────────────
+/captures/
+.externalNativeBuild/
+.cxx/
+app/release/
+app/build/
+
+# ── Signing ───────────────────────────────────────────────────────────────────
+keystore.properties
+*.jks
+*.keystore
+
+# ── Firebase ──────────────────────────────────────────────────────────────────
+# Service account key — contains a private RSA key, NEVER commit
+server/config/serviceAccount.json
+
+# ── Node.js ───────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.local
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Reports / temp ────────────────────────────────────────────────────────────
+app/build/reports/
+*.log
+gradle_out.txt
+gradle_stderr.txt
+gradle_stdout.txt
+build_log.txt
+
+# ── Server — secrets and build artifacts only ────────────────────────────────
+server/.env
+server/.env.local
+server/node_modules/
+server/dist/
+server/recordings/
+server/config/serviceAccount.json

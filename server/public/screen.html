@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AuraCast Screen Share</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d0d;color:#e0e0e0;font-family:system-ui,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  #toolbar{display:flex;align-items:center;gap:12px;padding:8px 14px;background:#1a1a2e;border-bottom:1px solid #2a2a4a;flex-shrink:0}
+  #toolbar h1{font-size:15px;font-weight:600;letter-spacing:.03em;color:#a78bfa}
+  #badge{padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:.06em;background:#333;color:#888}
+  #badge.live{background:#14532d;color:#4ade80}
+  #badge.wait{background:#422006;color:#fb923c}
+  #fps-counter{margin-left:auto;font-size:11px;color:#555;font-variant-numeric:tabular-nums}
+  #canvas-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+  canvas{max-width:100%;max-height:100%;object-fit:contain;display:block}
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);flex-direction:column;gap:14px}
+  #overlay p{font-size:16px;color:#9ca3af}
+  .spinner{width:40px;height:40px;border:3px solid #374151;border-top-color:#a78bfa;border-radius:50%;animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #status-bar{padding:4px 14px;font-size:11px;color:#4b5563;background:#111;border-top:1px solid #1f1f1f;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <h1>AuraCast Screen Share</h1>
+  <span id="badge" class="wait">WAITING</span>
+  <span id="fps-counter">-- fps</span>
+</div>
+<div id="canvas-wrap">
+  <canvas id="screen"></canvas>
+  <div id="overlay"><div class="spinner"></div><p id="overlay-msg">Connecting…</p></div>
+</div>
+<div id="status-bar" id="status-bar">Initialising WebCodecs…</div>
+
+<script>
+(function(){
+'use strict';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const params      = new URLSearchParams(location.search);
+const streamId    = params.get('id') || '';
+const WS_URL      = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/screen-watch?id=${streamId}`;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const canvas     = document.getElementById('screen');
+const ctx2d      = canvas.getContext('2d');
+const overlay    = document.getElementById('overlay');
+const overlayMsg = document.getElementById('overlay-msg');
+const badge      = document.getElementById('badge');
+const fpsEl      = document.getElementById('fps-counter');
+const statusBar  = document.getElementById('status-bar');
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let decoder      = null;
+let ws           = null;
+let frameCount   = 0;
+let lastFpsMs    = performance.now();
+let useWebCodecs = false;
+
+// ── FPS counter ───────────────────────────────────────────────────────────────
+setInterval(() => {
+  const now = performance.now();
+  const fps = (frameCount / ((now - lastFpsMs) / 1000)).toFixed(1);
+  fpsEl.textContent = `${fps} fps`;
+  frameCount = 0;
+  lastFpsMs  = now;
+}, 1500);
+
+function setStatus(msg){ statusBar.textContent = msg; }
+function showOverlay(msg){ overlay.style.display='flex'; overlayMsg.textContent=msg; }
+function hideOverlay(){ overlay.style.display='none'; }
+function setBadge(live){ badge.className=live?'live':'wait'; badge.textContent=live?'LIVE':'WAITING'; }
+
+// ── WebCodecs decoder ─────────────────────────────────────────────────────────
+function initWebCodecs(){
+  if(!('VideoDecoder' in window)){ return false; }
+  decoder = new VideoDecoder({
+    output(frame){
+      frameCount++;
+      if(canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight){
+        canvas.width  = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      ctx2d.drawImage(frame, 0, 0);
+      frame.close();
+    },
+    error(e){ setStatus('VideoDecoder error: '+e.message); }
+  });
+  decoder.configure({
+    codec:                 'avc1.42E01E',   // H.264 Baseline 3.0
+    optimizeForLatency:    true,
+  });
+  return true;
+}
+
+// ── Annex-B NAL → VideoDecoder ────────────────────────────────────────────────
+// We expect server to relay raw Annex-B byte stream chunks.
+// Key-frames arrive every ~2 s so we queue all chunks.
+function feedFrame(buf){
+  if(!decoder || decoder.state === 'closed') return;
+  // Detect whether chunk is a keyframe by scanning for SPS NAL (0x67 after start code)
+  const bytes = new Uint8Array(buf);
+  let isKey   = false;
+  for(let i=0;i<Math.min(bytes.length-4,64);i++){
+    if(bytes[i]===0&&bytes[i+1]===0&&bytes[i+2]===0&&bytes[i+3]===1){
+      const nalType = bytes[i+4] & 0x1F;
+      if(nalType===7||nalType===5){ isKey=true; break; }  // SPS or IDR
+    }
+  }
+  try{
+    decoder.decode(new EncodedVideoChunk({
+      type:      isKey ? 'key' : 'delta',
+      timestamp: performance.now() * 1000,
+      data:      buf,
+    }));
+  }catch(e){ setStatus('decode error: '+e.message); }
+}
+
+// ── MSE fallback ──────────────────────────────────────────────────────────────
+// Used when WebCodecs is unavailable (Safari < 16.4 on desktop).
+let mseSourceBuffer = null;
+let mseQueue        = [];
+let mseBusy         = false;
+
+function initMSE(){
+  if(!('MediaSource' in window)){ setStatus('Neither WebCodecs nor MSE available'); return; }
+  const video     = document.createElement('video');
+  video.autoplay  = true;
+  video.muted     = true;
+  video.style.cssText = 'max-width:100%;max-height:100%;';
+  canvas.replaceWith(video);
+
+  const ms = new MediaSource();
+  video.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', () => {
+    try{
+      mseSourceBuffer = ms.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+      mseSourceBuffer.mode = 'sequence';
+      mseSourceBuffer.addEventListener('updateend', flushMSE);
+      setStatus('MSE fallback active');
+    }catch(e){ setStatus('MSE addSourceBuffer failed: '+e.message); }
+  });
+}
+
+function feedMSE(buf){
+  mseQueue.push(buf);
+  flushMSE();
+}
+
+function flushMSE(){
+  if(!mseSourceBuffer || mseSourceBuffer.updating || mseQueue.length===0) return;
+  mseBusy = true;
+  const next = mseQueue.shift();
+  try{ mseSourceBuffer.appendBuffer(next); }catch(e){ mseQueue=[]; }
+}
+
+// ── WebSocket connection ───────────────────────────────────────────────────────
+let reconnectTimer = null;
+let controlWs      = null; // shared /control WS for sending input events
+
+function connectControlWs(){
+  // Derive control URL from the audio stream URL convention
+  const controlUrl = `${location.protocol==='https:'?'wss':'ws'}://${location.host}/control?id=${streamId}`;
+  controlWs = new WebSocket(controlUrl);
+  controlWs.onopen  = () => setStatus('Control WS connected');
+  controlWs.onerror = () => {};
+  controlWs.onclose = () => { controlWs=null; };
+}
+
+function sendInputEvent(payload){
+  if(!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+  controlWs.send(JSON.stringify({ type:'input', ...payload }));
+}
+
+function connect(){
+  if(ws && (ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)) return;
+  showOverlay('Connecting to server…');
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('WebSocket connected  |  stream id: '+streamId);
+    useWebCodecs = initWebCodecs();
+    if(!useWebCodecs){ initMSE(); setStatus('WebCodecs unavailable — MSE fallback'); }
+    else { setStatus('WebCodecs active'); }
+    connectControlWs();
+  };
+
+  ws.onmessage = (evt) => {
+    if(typeof evt.data === 'string'){
+      try{
+        const msg = JSON.parse(evt.data);
+        if(msg.type==='senderStatus'){ handleSenderStatus(msg.connected); }
+        if(msg.type==='senderDisconnected'){ handleSenderStatus(false); }
+      }catch(_){}
+      return;
+    }
+    // Binary frame
+    if(useWebCodecs){ feedFrame(evt.data); }
+    else            { feedMSE(evt.data);   }
+  };
+
+  ws.onclose = () => {
+    setBadge(false); showOverlay('Disconnected — reconnecting…');
+    setStatus('WS closed'); scheduleReconnect();
+  };
+  ws.onerror = () => {
+    setStatus('WS error'); scheduleReconnect();
+  };
+}
+
+function scheduleReconnect(){
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connect, 3000);
+}
+
+function handleSenderStatus(connected){
+  if(connected){ hideOverlay(); setBadge(true); }
+  else { showOverlay('Waiting for screen share…'); setBadge(false); }
+}
+
+// ── Phase 2 — pointer input → /control WS ────────────────────────────────────
+// Pointer events on the canvas translate to normalized coords (0-1) and are
+// sent as { type:'input', kind:'tap'|'swipe', x, y } over the control socket.
+let pointerDown   = false;
+let pointerStartX = 0;
+let pointerStartY = 0;
+let pointerStartT = 0;
+
+function canvasNorm(evt){
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (evt.clientX - r.left) / r.width)),
+    y: Math.max(0, Math.min(1, (evt.clientY - r.top)  / r.height)),
+  };
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const n = canvasNorm(e);
+  pointerDown=true; pointerStartX=n.x; pointerStartY=n.y; pointerStartT=Date.now();
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener('pointerup', (e) => {
+  e.preventDefault();
+  if(!pointerDown) return;
+  pointerDown = false;
+  const n    = canvasNorm(e);
+  const dist = Math.hypot(n.x - pointerStartX, n.y - pointerStartY);
+  const dur  = Date.now() - pointerStartT;
+  if(dist < 0.02){
+    // Tap
+    sendInputEvent({ kind:'tap', x: pointerStartX, y: pointerStartY });
+  } else {
+    // Swipe
+    sendInputEvent({ kind:'swipe',
+      x1: pointerStartX, y1: pointerStartY,
+      x2: n.x, y2: n.y, durationMs: dur });
+  }
+});
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ── Key buttons ────────────────────────────────────────────────────────────────
+// Inject Home / Back / Recents Android keycodes over the control channel.
+// Keycodes: KEYCODE_HOME=3, KEYCODE_BACK=4, KEYCODE_APP_SWITCH=187
+document.addEventListener('keydown', (e) => {
+  const map = { Escape:4, Home:3, F1:187 };
+  if(map[e.key]) sendInputEvent({ kind:'key', keycode: map[e.key] });
+});
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+if(!streamId){ showOverlay('No stream ID in URL  (?id=…)'); }
+else         { connect(); }
+
+})(); // end IIFE
+</script>
+</body>
+</html>

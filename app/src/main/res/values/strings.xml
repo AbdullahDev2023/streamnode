@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StreamNode</string>
+    <string name="streaming_live">● Live</string>
+    <string name="streaming_idle">Ready</string>
+    <string name="btn_start">Start Streaming</string>
+    <string name="btn_stop">Stop Streaming</string>
+    <string name="notif_channel_name">StreamNode Streaming</string>
+    <string name="notif_channel_desc">Active while streaming audio to PC</string>
+    <string name="perm_rationale">StreamNode needs microphone access to stream audio to your PC.</string>
+    <string name="settings_url_hint">wss://xxxx.ngrok-free.app/stream</string>
+    <string name="settings_url_invalid">URL must start with ws:// or wss://</string>
+    <string name="cd_mic_icon">Microphone</string>
+    <string name="cd_settings">Settings</string>
+</resources>

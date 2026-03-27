@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AuraCast — PiP View</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d0d;color:#e0e0e0;font-family:system-ui,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  #toolbar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#1a1a2e;border-bottom:1px solid #2a2a4a;flex-shrink:0;flex-wrap:wrap}
+  #toolbar h1{font-size:15px;font-weight:600;color:#a78bfa;letter-spacing:.03em}
+  #badge{padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:.06em;background:#333;color:#888}
+  #badge.live{background:#14532d;color:#4ade80}
+  #badge.wait{background:#422006;color:#fb923c}
+  #track-count{font-size:11px;color:#6c63e6;padding:2px 8px;border:1px solid #3d3a6e;border-radius:10px}
+  .layout-btn{background:#1e1b3a;color:#a78bfa;border:1px solid #3d3a6e;border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;transition:background .15s}
+  .layout-btn:hover,.layout-btn.active{background:#3d3a6e;color:#fff}
+  #fps-counter{margin-left:auto;font-size:11px;color:#555;font-variant-numeric:tabular-nums}
+  #canvas-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;background:#000}
+  canvas{max-width:100%;max-height:100%;display:block}
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);flex-direction:column;gap:14px}
+  #overlay p{font-size:15px;color:#9ca3af;text-align:center;max-width:300px;line-height:1.5}
+  .spinner{width:40px;height:40px;border:3px solid #374151;border-top-color:#a78bfa;border-radius:50%;animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #status-bar{padding:4px 14px;font-size:11px;color:#4b5563;background:#111;border-top:1px solid #1f1f1f;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <h1>📷 PiP View</h1>
+  <span id="track-count">0 tracks</span>
+  <span id="badge" class="wait">WAITING</span>
+  <button class="layout-btn active" id="btn-side"  onclick="setLayout('side')">⬛⬛ Side-by-Side</button>
+  <button class="layout-btn"        id="btn-pip"   onclick="setLayout('pip')">🔲 PiP Overlay</button>
+  <button class="layout-btn"        id="btn-stack" onclick="setLayout('stack')">🔳 Stacked</button>
+  <span id="fps-counter">-- fps</span>
+</div>
+<div id="canvas-wrap">
+  <canvas id="pipCanvas"></canvas>
+  <div id="overlay"><div class="spinner"></div><p id="overlay-msg">Connecting to signaling server…</p></div>
+</div>
+<div id="status-bar" id="statusBar">Initialising WebRTC…</div>
+
+<script>
+(function(){
+'use strict';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const params   = new URLSearchParams(location.search);
+const streamId = params.get('id') || '';
+const SIG_URL  = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/signal?role=browser&id=${encodeURIComponent(streamId)}`;
+
+// ── DOM ────────────────────────────────────────────────────────────────────────
+const canvas      = document.getElementById('pipCanvas');
+const ctx2d       = canvas.getContext('2d');
+const overlay     = document.getElementById('overlay');
+const overlayMsg  = document.getElementById('overlay-msg');
+const badge       = document.getElementById('badge');
+const fpsEl       = document.getElementById('fps-counter');
+const statusBar   = document.getElementById('status-bar');
+const trackCount  = document.getElementById('track-count');
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let pc           = null;
+let sigWs        = null;
+let videoTracks  = [];   // up to 2 VideoTrack objects
+let videoEls     = [];   // HTMLVideoElement per track for canvas draw
+let layout       = 'side'; // 'side' | 'pip' | 'stack'
+let animFrameId  = null;
+let frameCount   = 0;
+let lastFpsMs    = performance.now();
+let rafRunning   = false;
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function setStatus(t){ statusBar.textContent = t; }
+function showOverlay(msg){ overlay.style.display='flex'; overlayMsg.textContent=msg; }
+function hideOverlay(){ overlay.style.display='none'; }
+function setBadge(live){ badge.className=live?'live':'wait'; badge.textContent=live?'LIVE':'WAITING'; }
+function setTrackCount(n){ trackCount.textContent=`${n} track${n===1?'':'s'}`; }
+
+// ── Layout toggle ─────────────────────────────────────────────────────────────
+function setLayout(mode){
+  layout = mode;
+  ['side','pip','stack'].forEach(l => document.getElementById('btn-'+l).classList.toggle('active', l===mode));
+}
+window.setLayout = setLayout;
+
+// ── Build video elements from incoming tracks ──────────────────────────────────
+function buildVideoEl(track){
+  const v = document.createElement('video');
+  v.srcObject = new MediaStream([track]);
+  v.autoplay  = true;
+  v.muted     = true;
+  v.playsInline = true;
+  v.play().catch(()=>{});
+  return v;
+}
+
+function onNewVideoTrack(track){
+  if(videoTracks.length >= 2) return; // max 2 for PiP
+  videoTracks.push(track);
+  videoEls.push(buildVideoEl(track));
+  setTrackCount(videoTracks.length);
+  if(videoTracks.length === 1){
+    hideOverlay(); setBadge(true);
+    setStatus(`1 video track — waiting for second camera…`);
+    startRenderLoop();
+  } else if(videoTracks.length === 2){
+    setStatus(`Both cameras active — rendering ${layout} layout`);
+  }
+  track.onended = () => {
+    const idx = videoTracks.indexOf(track);
+    if(idx !== -1){ videoTracks.splice(idx,1); videoEls.splice(idx,1); }
+    setTrackCount(videoTracks.length);
+    if(videoTracks.length === 0){ setBadge(false); showOverlay('Camera tracks ended'); }
+  };
+}
+
+// ── Canvas render loop ─────────────────────────────────────────────────────────
+function startRenderLoop(){
+  if(rafRunning) return;
+  rafRunning = true;
+  function draw(){
+    if(!rafRunning){ return; }
+    animFrameId = requestAnimationFrame(draw);
+    const w = canvas.width, h = canvas.height;
+    ctx2d.clearRect(0,0,w,h);
+    if(videoTracks.length === 0) return;
+
+    if(videoTracks.length === 1){
+      // Single camera — full canvas
+      ctx2d.drawImage(videoEls[0], 0, 0, w, h);
+      frameCount++;
+      return;
+    }
+
+    // Two cameras
+    if(layout === 'side'){
+      ctx2d.drawImage(videoEls[0], 0, 0, w/2, h);
+      ctx2d.drawImage(videoEls[1], w/2, 0, w/2, h);
+      ctx2d.strokeStyle='#a78bfa'; ctx2d.lineWidth=2;
+      ctx2d.beginPath(); ctx2d.moveTo(w/2,0); ctx2d.lineTo(w/2,h); ctx2d.stroke();
+    } else if(layout === 'stack'){
+      ctx2d.drawImage(videoEls[0], 0, 0, w, h/2);
+      ctx2d.drawImage(videoEls[1], 0, h/2, w, h/2);
+      ctx2d.strokeStyle='#a78bfa'; ctx2d.lineWidth=2;
+      ctx2d.beginPath(); ctx2d.moveTo(0,h/2); ctx2d.lineTo(w,h/2); ctx2d.stroke();
+    } else { // pip overlay
+      ctx2d.drawImage(videoEls[0], 0, 0, w, h);
+      const pw=Math.round(w*0.28), ph=Math.round(h*0.28);
+      const px=w-pw-14, py=h-ph-14;
+      ctx2d.strokeStyle='#a78bfa'; ctx2d.lineWidth=2;
+      ctx2d.strokeRect(px-1, py-1, pw+2, ph+2);
+      ctx2d.drawImage(videoEls[1], px, py, pw, ph);
+    }
+    frameCount++;
+  }
+  draw();
+}
+
+// ── Resize canvas to container ─────────────────────────────────────────────────
+function resizeCanvas(){
+  const wrap = document.getElementById('canvas-wrap');
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ── FPS counter ────────────────────────────────────────────────────────────────
+setInterval(()=>{
+  const now=performance.now();
+  const fps=(frameCount/((now-lastFpsMs)/1000)).toFixed(1);
+  fpsEl.textContent=`${fps} fps`;
+  frameCount=0; lastFpsMs=now;
+},1500);
+
+// ── WebRTC ─────────────────────────────────────────────────────────────────────
+const ICE_SERVERS=[
+  {urls:'stun:stun.l.google.com:19302'},
+  {urls:'stun:stun1.l.google.com:19302'}
+];
+
+function buildPc(){
+  const p = new RTCPeerConnection({
+    iceServers: ICE_SERVERS,
+    sdpSemantics:'unified-plan',
+    bundlePolicy:'max-bundle',
+    rtcpMuxPolicy:'require'
+  });
+  p.onicecandidate = e => {
+    if(e.candidate) sigSend({type:'ice-candidate',candidate:e.candidate});
+  };
+  p.ontrack = e => {
+    if(e.track.kind==='video') onNewVideoTrack(e.track);
+  };
+  p.onconnectionstatechange = () => {
+    setStatus('WebRTC: '+p.connectionState);
+    if(p.connectionState==='failed'){ setBadge(false); showOverlay('WebRTC failed — reconnecting…'); scheduleReconnect(); }
+  };
+  return p;
+}
+
+// ── Signaling ──────────────────────────────────────────────────────────────────
+let reconnectTimer = null;
+
+function sigSend(obj){ if(sigWs && sigWs.readyState===WebSocket.OPEN) sigWs.send(JSON.stringify(obj)); }
+
+function connectSignaling(){
+  if(sigWs && (sigWs.readyState===WebSocket.OPEN||sigWs.readyState===WebSocket.CONNECTING)) return;
+  // Reset tracks on reconnect
+  rafRunning=false; videoTracks=[]; videoEls=[]; setTrackCount(0); setBadge(false);
+  showOverlay('Connecting to signaling server…');
+  setStatus('Signaling: connecting…');
+
+  sigWs = new WebSocket(SIG_URL);
+  sigWs.onopen = () => {
+    setStatus('Signaling connected — waiting for phone offer…');
+    pc = buildPc();
+  };
+  sigWs.onmessage = async (evt) => {
+    let msg; try{ msg=JSON.parse(evt.data); }catch{ return; }
+    if(!pc) return;
+
+    if(msg.type==='offer'){
+      await pc.setRemoteDescription(new RTCSessionDescription(msg));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sigSend({type:'answer', sdp:answer.sdp});
+      showOverlay('Negotiating…');
+      setStatus('SDP answer sent — waiting for ICE…');
+    } else if(msg.type==='ice-candidate' && msg.candidate){
+      pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(()=>{});
+    } else if(msg.type==='waiting'){
+      showOverlay('Waiting for phone to connect…');
+      setStatus('No phone on this stream ID yet');
+    } else if(msg.type==='peer-left'){
+      setBadge(false); showOverlay('Phone disconnected');
+      setStatus('Phone left — reconnecting signaling in 4s…');
+      scheduleReconnect(4000);
+    } else if(msg.type==='welcome'){
+      setStatus('Signaling: registered as browser viewer');
+    }
+  };
+  sigWs.onclose = () => {
+    setStatus('Signaling disconnected'); scheduleReconnect();
+  };
+  sigWs.onerror = () => { setStatus('Signaling error'); scheduleReconnect(); };
+}
+
+function scheduleReconnect(delay=3000){
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    pc?.close(); pc=null;
+    connectSignaling();
+  }, delay);
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+if(!streamId){
+  showOverlay('Missing ?id= in URL.\nOpen this page from the dashboard.');
+} else {
+  connectSignaling();
+}
+
+})();
+</script>
+</body>
+</html>

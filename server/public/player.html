@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AuraCast — Player</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--accent:#6c63e6;--green:#06d6a0;--red:#ef476f;--yellow:#ffd166;--txt:#fff;--txt2:#888;--border:#2e3251}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;padding:32px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px 32px;max-width:420px;width:100%;display:flex;flex-direction:column;gap:16px;align-items:center}
+h1{font-size:1.5rem;font-weight:700;letter-spacing:.04em}
+.status{font-size:.85rem;color:var(--txt2);min-height:20px;text-align:center}
+.status.live{color:var(--green)}.status.err{color:var(--red)}.status.warn{color:var(--yellow)}
+.transport-badge{font-size:.72rem;padding:3px 10px;border-radius:10px;font-weight:700;border:1px solid transparent}
+.transport-badge.webrtc{color:var(--green);border-color:var(--green);background:#06d6a012}
+.transport-badge.ws{color:var(--yellow);border-color:#ffd16660;background:#ffd1660d}
+.transport-badge.connecting{color:var(--yellow);border-color:var(--yellow);background:#ffd1660d}
+.transport-badge.negotiating{color:var(--accent);border-color:#6c63e660;background:#6c63e612;animation:tblink 1.2s step-end infinite}
+.transport-badge.fallback{color:#f4895f;border-color:#f4895f60;background:#f4895f10}
+@keyframes tblink{0%,100%{opacity:1}50%{opacity:.4}}
+.vis{width:100%;height:110px;border-radius:10px;background:#111520}
+.vis-controls{display:flex;gap:8px;width:100%}
+.vis-controls button{flex:1;padding:6px 0;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--txt2);font-size:.75rem;font-weight:700;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.vis-controls button.active{background:#6c63e620;color:var(--accent);border-color:var(--accent)}
+.vol-row{display:flex;align-items:center;gap:10px;width:100%;font-size:.8rem;color:var(--txt2)}
+.vol-row input{flex:1;accent-color:var(--accent)}
+.btn{padding:10px 24px;border-radius:10px;border:none;font-size:.88rem;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.btn-start{background:var(--accent);color:#fff}.btn-start:hover{opacity:.85}
+.btn-talk{background:#ef476f20;color:var(--red);border:1px solid #ef476f55;font-size:.9rem;font-weight:700;width:100%;padding:12px;border-radius:12px;cursor:pointer;transition:background .1s,transform .1s;user-select:none;-webkit-user-select:none;display:none}
+.btn-talk.active{background:#ef476f;color:#fff;transform:scale(.97)}
+.btn-talk.disabled{opacity:.35;cursor:not-allowed}
+.hint{font-size:.73rem;color:var(--txt2);text-align:center}
+.jitter-row{display:none;align-items:center;gap:8px;width:100%;font-size:.78rem;color:var(--txt2)}
+.jitter-row input[type=range]{flex:1;accent-color:var(--accent)}
+.jitter-row span{font-family:monospace;font-size:.78rem;min-width:38px;text-align:right}
+.btn-rec{background:#ef476f20;color:var(--red);border:1px solid #ef476f55;font-size:.88rem;font-weight:700;width:100%;padding:10px;border-radius:12px;cursor:pointer;font-family:inherit;transition:background .15s,color .15s;display:none}
+.btn-rec.recording{background:#ef476f;color:#fff}
+.rec-indicator{display:none;font-size:.78rem;color:var(--red);font-family:monospace;text-align:center}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎙 AuraCast</h1>
+  <span id="transport" class="transport-badge connecting">Connecting…</span>
+  <canvas id="vis" class="vis"></canvas>
+  <div class="vis-controls" id="visControls">
+    <button id="btnFft"  class="active" onclick="setVisMode('fft')">📊 Spectrum</button>
+    <button id="btnWave"           onclick="setVisMode('waveform')">〰 Waveform</button>
+  </div>
+  <div class="vol-row">
+    🔊
+    <input type="range" id="vol" min="0" max="3" step="0.05" value="1">
+    <span id="volLabel">100%</span>
+  </div>
+  <div class="jitter-row" id="jitterRow">
+    <label>Buffer</label>
+    <input type="range" id="jitterSlider" min="40" max="800" step="20" value="120"
+      oninput="jitterMs=+this.value; document.getElementById('jitterLabel').textContent=this.value+'ms'">
+    <span id="jitterLabel">120ms</span>
+  </div>
+  <p class="status" id="status">Initialising…</p>
+  <button class="btn btn-start" id="startBtn" style="display:none" onclick="startAudio()">▶ Click to enable audio</button>
+  <button class="btn-talk" id="talkBtn" title="Hold to speak to the phone">🎙 Hold to Talk</button>
+  <button class="btn-rec" id="recBtn" onclick="toggleListenerRec()" title="Record incoming audio to a local file">⏺ Record</button>
+  <span class="rec-indicator" id="recIndicator"></span>
+  <p class="hint" id="hint"></p>
+</div>
+<audio id="rtcAudio" autoplay playsinline style="display:none"></audio>
+<script>
+// ── URL params ────────────────────────────────────────────────────────────────
+const params   = new URLSearchParams(location.search);
+const streamId = params.get('id') || '';
+const wsBase   = location.origin.replace(/^http/, 'ws');
+const httpBase = location.origin;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const statusEl    = document.getElementById('status');
+const transportEl = document.getElementById('transport');
+const hintEl      = document.getElementById('hint');
+const startBtn    = document.getElementById('startBtn');
+const volEl       = document.getElementById('vol');
+const volLabel    = document.getElementById('volLabel');
+const canvas      = document.getElementById('vis');
+const rtcAudio    = document.getElementById('rtcAudio');
+const ctx2d       = canvas.getContext('2d');
+
+// ── Volume control ────────────────────────────────────────────────────────────
+let gainNode = null;
+volEl.addEventListener('input', () => {
+    const v = parseFloat(volEl.value);
+    volLabel.textContent = Math.round(v * 100) + '%';
+    if (gainNode) gainNode.gain.value = v;
+    if (rtcAudio) rtcAudio.volume = Math.min(v, 1);
+});
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let transport      = 'none';   // 'webrtc' | 'websocket'
+let pc             = null;     // RTCPeerConnection
+let sigWs          = null;     // signaling WebSocket
+let audioWs        = null;     // legacy /listen WebSocket
+let audioCtx       = null;
+let analyser       = null;
+let animFrame      = null;
+let codecConfig    = null;
+let audioDecoder   = null;
+let jitterBuf      = [];
+let jitterMs       = 120;
+let webrtcReady    = false;
+let webrtcTimeout  = null;
+// FIX: single drain interval handle — cleared on every connectLegacyWs() call so
+// reconnects don't pile up multiple simultaneous setInterval loops (the old code
+// called setInterval inside connectLegacyWs without ever clearing it, so after N
+// reconnects there were N concurrent drain loops causing frame duplication → crackling).
+let drainIntervalId = null;
+// FIX: scheduled playback clock for WebSocket Opus path.
+// Each decoded AudioBuffer is scheduled to start exactly where the previous one ended,
+// using a small lookahead. The old code used audioCtx.currentTime for every frame,
+// causing overlaps when two frames decoded back-to-back, and gaps when decoding lagged.
+let playbackHead   = 0;
+// FIX: track the connected WebRTC MediaStreamSource node to prevent startAudio()
+// from creating a second source node on the same stream (double audio / phasing).
+let rtcSourceNode  = null;
+
+// ── ICE trickle candidate queue ───────────────────────────────────────────────
+// Candidates from the phone that arrive before setRemoteDescription(offer)
+// resolves are queued here and drained immediately after. RFC 8838 §4 compliance.
+let pendingIceCandidates = [];
+let remoteDescSet        = false;
+
+// ── Feature 7: Listener-side recording ───────────────────────────────────────
+let mediaRecorder  = null;
+let recChunks      = [];
+let recTimerHandle = null;
+let recStartedAt   = 0;
+let recEnabled     = true; // can be set to false by server feature_flags
+
+function toggleListenerRec() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') stopListenerRec();
+    else startListenerRec();
+}
+
+async function startListenerRec() {
+    const stream = rtcAudio.srcObject;
+    if (!stream) { alert('No audio stream to record yet.'); return; }
+    recChunks = [];
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg']
+        .find(m => MediaRecorder.isTypeSupported(m)) || '';
+    try {
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    } catch (e) { alert('MediaRecorder not supported in this browser.'); return; }
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recChunks.push(e.data); };
+    mediaRecorder.onstop = saveRecording;
+    mediaRecorder.start(1000); // collect chunks every 1 s
+    recStartedAt = Date.now();
+    const btn = document.getElementById('recBtn');
+    btn.textContent = '⏹ Stop';
+    btn.classList.add('recording');
+    const ind = document.getElementById('recIndicator');
+    ind.style.display = '';
+    recTimerHandle = setInterval(() => {
+        const s = Math.floor((Date.now() - recStartedAt) / 1000);
+        const m = Math.floor(s / 60), ss = s % 60;
+        ind.textContent = `🔴 ${m}:${String(ss).padStart(2, '0')}`;
+    }, 1000);
+}
+
+function stopListenerRec() {
+    if (mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
+    clearInterval(recTimerHandle);
+    const btn = document.getElementById('recBtn');
+    btn.textContent = '⏺ Record';
+    btn.classList.remove('recording');
+    document.getElementById('recIndicator').style.display = 'none';
+}
+
+function saveRecording() {
+    if (!recChunks.length) return;
+    const mimeType = recChunks[0]?.type || 'audio/webm';
+    const ext = mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const blob = new Blob(recChunks, { type: mimeType });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `auracast_${streamId.slice(0, 8)}_${Date.now()}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 5000);
+}
+
+function setStatus(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className   = 'status' + (cls ? ' ' + cls : '');
+}
+function setTransport(t) {
+    transport = t;
+    // Phase 4: unified mode map aligns with dashboard Phase 3 badge names
+    const TRANSPORT_MAP = {
+        webrtc:          { text: '⚡ P2P',      cls: 'webrtc'      },
+        webrtc_p2p:      { text: '⚡ P2P',      cls: 'webrtc'      },
+        websocket:       { text: '📡 Relay',     cls: 'ws'          },
+        websocket_relay: { text: '📡 Relay',     cls: 'ws'          },
+        negotiating:     { text: '🔄 ICE…',     cls: 'negotiating' },
+        fallback:        { text: '⚠ Fallback',  cls: 'fallback'    },
+    };
+    const s = TRANSPORT_MAP[t] || { text: 'Connecting…', cls: 'connecting' };
+    transportEl.textContent = s.text;
+    transportEl.className   = 'transport-badge ' + s.cls;
+    // Show Talk button only on WebRTC (intercom requires P2P track renegotiation)
+    talkBtn.style.display = (t === 'webrtc' || t === 'webrtc_p2p') ? '' : 'none';
+    // Show jitter buffer slider only on WebSocket path
+    document.getElementById('jitterRow').style.display =
+        (t === 'websocket' || t === 'websocket_relay') ? 'flex' : 'none';
+}
+
+// ── Intercom (push-to-talk) ───────────────────────────────────────────────────
+const talkBtn       = document.getElementById('talkBtn');
+let intercomSender  = null;   // RTCRtpSender for browser mic track
+let intercomStream  = null;   // MediaStream from getUserMedia
+let intercomActive  = false;
+
+async function startIntercom() {
+    // BUG FIX 3 — transport can be 'webrtc' (set locally when P2P establishes)
+    // OR 'webrtc_p2p' (set via server transportStatus broadcast). Both values
+    // mean WebRTC is the active transport. The old check `transport !== 'webrtc'`
+    // blocked intercom whenever the server broadcast updated the value to 'webrtc_p2p'.
+    if (intercomActive || !pc || (transport !== 'webrtc' && transport !== 'webrtc_p2p')) return;
+    talkBtn.classList.add('active');
+    talkBtn.textContent = '🔴 Talking…';
+    try {
+        intercomStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const [micTrack] = intercomStream.getAudioTracks();
+        // Add browser mic track to the peer connection
+        intercomSender = pc.addTrack(micTrack, intercomStream);
+        intercomActive = true;
+        // Renegotiate: create new offer (with browser's audio m= section)
+        await renegotiateOffer();
+    } catch (e) {
+        console.warn('Intercom getUserMedia failed:', e);
+        stopIntercom();
+    }
+}
+
+async function stopIntercom() {
+    talkBtn.classList.remove('active');
+    talkBtn.textContent = '🎙 Hold to Talk';
+    if (intercomSender && pc) {
+        try {
+            pc.removeTrack(intercomSender);
+            await renegotiateOffer();   // renegotiate to remove the track
+        } catch (e) { console.warn('removeTrack error:', e); }
+        intercomSender = null;
+    }
+    if (intercomStream) {
+        intercomStream.getTracks().forEach(t => t.stop());
+        intercomStream = null;
+    }
+    intercomActive = false;
+}
+
+async function renegotiateOffer() {
+    if (!pc || !sigWs || sigWs.readyState !== WebSocket.OPEN) return;
+    try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sigWs.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+    } catch (e) { console.warn('renegotiateOffer error:', e); }
+}
+
+// ── Phase 4: Persistent data channel (/listen) ───────────────────────────────
+// Always open alongside WebRTC for server→browser broadcasts
+// (transportStatus, feature_flags, status). Reconnects automatically.
+// In WebSocket fallback mode this WS is not used — connectLegacyWs() opens
+// its own /listen connection that handles both audio frames and data.
+let dataWs              = null;
+let dataWsReconnectTimer = null;
+
+function openDataWs() {
+    if (!streamId) return;
+    if (dataWs && (dataWs.readyState === WebSocket.OPEN || dataWs.readyState === WebSocket.CONNECTING)) return;
+    clearTimeout(dataWsReconnectTimer);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    dataWs = new WebSocket(`${proto}://${location.host}/listen?id=${encodeURIComponent(streamId)}`);
+    dataWs.binaryType = 'arraybuffer';
+    dataWs.onmessage = ({ data }) => {
+        if (typeof data !== 'string') return; // ignore audio frames in data-only channel
+        try { handleDataMsg(JSON.parse(data)); } catch (_) {}
+    };
+    dataWs.onclose = () => { dataWsReconnectTimer = setTimeout(openDataWs, 3000); };
+    dataWs.onerror = () => {};
+}
+
+function closeDataWs() {
+    clearTimeout(dataWsReconnectTimer);
+    if (dataWs) { try { dataWs.close(1000, 'cleanup'); } catch (_) {} dataWs = null; }
+}
+
+/**
+ * Phase 4: handle JSON data messages from the server broadcast channel.
+ * Called from both openDataWs (WebRTC mode) and connectLegacyWs (WS mode).
+ */
+function handleDataMsg(msg) {
+    if (msg.type === 'transportStatus') {
+        // Phone reported its active transport — display as a hint
+        const LABELS = {
+            webrtc_p2p:      '⚡ WebRTC P2P',
+            websocket_relay: '📡 WebSocket Relay',
+            fallback:        '⚠ WS Fallback',
+            negotiating:     '🔄 Negotiating',
+        };
+        const phoneMode = LABELS[msg.mode] || msg.mode || '—';
+        const rttStr    = msg.rtt != null ? ` · ${msg.rtt}ms RTT` : '';
+        const iceStr    = msg.iceState ? ` · ICE ${msg.iceState}` : '';
+        hintEl.textContent = `Phone: ${phoneMode}${rttStr}${iceStr}`;
+    } else if (msg.type === 'feature_flags') {
+        if (msg.jitterControlEnabled === false) {
+            document.getElementById('jitterRow').style.display = 'none';
+        } else if (msg.jitterControlEnabled === true && (transport === 'websocket' || transport === 'websocket_relay')) {
+            document.getElementById('jitterRow').style.display = 'flex';
+        }
+        if (msg.listenerRecordingEnabled === false) {
+            recEnabled = false;
+            document.getElementById('recBtn').style.display = 'none';
+            if (mediaRecorder && mediaRecorder.state === 'recording') stopListenerRec();
+        } else if (msg.listenerRecordingEnabled === true) {
+            recEnabled = true;
+            if (typeof MediaRecorder !== 'undefined' && rtcAudio.srcObject) {
+                document.getElementById('recBtn').style.display = '';
+            }
+        }
+    }
+}
+
+// Push-to-talk: mouse + touch events
+talkBtn.addEventListener('mousedown',  (e) => { e.preventDefault(); startIntercom(); });
+talkBtn.addEventListener('mouseup',    (e) => { e.preventDefault(); stopIntercom();  });
+talkBtn.addEventListener('mouseleave', (e) => { if (intercomActive) stopIntercom();  });
+talkBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startIntercom(); }, { passive: false });
+talkBtn.addEventListener('touchend',   (e) => { e.preventDefault(); stopIntercom();  }, { passive: false });
+
+// ── Visualiser ────────────────────────────────────────────────────────────────
+let visMode = 'fft'; // 'fft' | 'waveform'
+
+// Hide visualiser controls if ?vis=0 is in the URL
+if (params.get('vis') === '0') {
+    document.getElementById('visControls').style.display = 'none';
+}
+
+function setVisMode(mode) {
+    visMode = mode;
+    document.getElementById('btnFft').classList.toggle('active',  mode === 'fft');
+    document.getElementById('btnWave').classList.toggle('active', mode === 'waveform');
+}
+
+function drawVis() {
+    animFrame = requestAnimationFrame(drawVis);
+    canvas.width  = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    const W = canvas.width, H = canvas.height;
+    ctx2d.clearRect(0, 0, W, H);
+    if (!analyser) {
+        ctx2d.fillStyle = '#6c63e620';
+        ctx2d.fillRect(0, H / 2 - 1, W, 2);
+        return;
+    }
+    if (visMode === 'fft') drawFFT(W, H);
+    else drawWaveform(W, H);
+}
+
+function drawFFT(W, H) {
+    analyser.fftSize = 512;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(buf);
+    const bars = 64, bw = (W / bars) - 1;
+    for (let i = 0; i < bars; i++) {
+        const v  = buf[Math.floor(i * buf.length / bars)] / 255;
+        const bh = Math.max(2, v * H * 0.9);
+        const hue = 250 - v * 80;
+        ctx2d.fillStyle = `hsl(${hue},80%,${40 + v * 30}%)`;
+        ctx2d.fillRect(i * (bw + 1), H - bh, bw, bh);
+    }
+}
+
+function drawWaveform(W, H) {
+    analyser.fftSize = 2048;
+    const buf = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(buf);
+    ctx2d.strokeStyle = '#6c63e6';
+    ctx2d.lineWidth   = 2;
+    ctx2d.beginPath();
+    const step = W / buf.length;
+    for (let i = 0; i < buf.length; i++) {
+        const y = (buf[i] / 128.0) * (H / 2);
+        if (i === 0) ctx2d.moveTo(0, y);
+        else ctx2d.lineTo(i * step, y);
+    }
+    ctx2d.stroke();
+}
+drawVis();
+
+// ── AudioContext bootstrap ────────────────────────────────────────────────────
+function ensureAudioCtx() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    gainNode = audioCtx.createGain();
+    gainNode.gain.value = parseFloat(volEl.value);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    gainNode.connect(analyser);
+    analyser.connect(audioCtx.destination);
+}
+
+function startAudio() {
+    startBtn.style.display = 'none';
+    ensureAudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (transport === 'webrtc' || transport === 'webrtc_p2p') {
+        if (rtcAudio.srcObject && !rtcSourceNode) {
+            // FIX: guard against creating a second MediaStreamSource on the same stream.
+            // pc.ontrack already connects the source when autoplay works; startAudio()
+            // is only called when autoplay is blocked. Without the guard, two source nodes
+            // on the same stream cause phasing / double-volume artifacts.
+            rtcSourceNode = audioCtx.createMediaStreamSource(rtcAudio.srcObject);
+            rtcSourceNode.connect(gainNode);
+        }
+        rtcAudio.play().catch(() => {});
+    }
+}
+
+// ── WebRTC path ───────────────────────────────────────────────────────────────
+async function startWebRTC() {
+    // --- Teardown any previous session to avoid leaks / stale handlers ---
+    clearTimeout(webrtcTimeout);
+    webrtcReady = false;
+    pendingIceCandidates = [];
+    remoteDescSet = false;
+    // FIX: disconnect and null the previous source node so ontrack creates a fresh one.
+    if (rtcSourceNode) { try { rtcSourceNode.disconnect(); } catch (_) {} rtcSourceNode = null; }
+    if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+    if (sigWs) { try { sigWs.close(1000, 'reinit'); } catch (_) {} sigWs = null; }
+    // Phase 4: close stale data WS so openDataWs() below opens exactly one fresh socket.
+    closeDataWs();
+    // ---
+    if (!streamId) { setStatus('No stream ID in URL', 'err'); return false; }
+    setStatus('Fetching ICE config…');
+    let iceServers;
+    try {
+        const r = await fetch(`${httpBase}/ice-config`);
+        ({ iceServers } = await r.json());
+    } catch (e) { setStatus('ICE config fetch failed: ' + e.message, 'err'); return false; }
+
+    pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
+
+    pc.ontrack = ({ track, streams }) => {
+        if (track.kind !== 'audio') return;
+        webrtcReady = true;
+        clearTimeout(webrtcTimeout);
+        setTransport('webrtc_p2p');
+        setStatus('Live — WebRTC P2P', 'live');
+        rtcAudio.srcObject = streams[0] || new MediaStream([track]);
+        ensureAudioCtx();
+        if (audioCtx.state === 'suspended') {
+            startBtn.style.display = '';
+            hintEl.textContent = 'Tap the button above to unmute (browser autoplay policy)';
+        } else {
+            // FIX: only create source node once per stream; startAudio() uses the same guard.
+            if (!rtcSourceNode) {
+                rtcSourceNode = audioCtx.createMediaStreamSource(rtcAudio.srcObject);
+                rtcSourceNode.connect(gainNode);
+            }
+            rtcAudio.play().catch(() => { startBtn.style.display = ''; });
+        }
+        // Feature 7: show Record button if MediaRecorder is available and not suppressed by flag
+        if (typeof MediaRecorder !== 'undefined' && recEnabled) {
+            document.getElementById('recBtn').style.display = '';
+        }
+    };
+
+    pc.onicecandidate = ({ candidate }) => {
+        // null candidate = end-of-candidates marker — never send to phone,
+        // addIceCandidate(null) throws on Android even with try/catch.
+        if (!candidate) return;
+        if (sigWs?.readyState === WebSocket.OPEN) {
+            sigWs.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        console.log('[WebRTC] connectionState →', pc?.connectionState);
+        if (pc && ['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+            setStatus('WebRTC disconnected — reconnecting…', 'warn');
+            webrtcReady = false;
+            // Close & null the stale PC before init() creates a fresh one
+            const stale = pc; pc = null;
+            try { stale.close(); } catch (_) {}
+            setTimeout(init, 3000);
+        }
+    };
+
+    sigWs = new WebSocket(`${wsBase}/signal?id=${encodeURIComponent(streamId)}&role=browser`);
+
+    sigWs.onmessage = async ({ data }) => {
+        const msg = JSON.parse(data);
+        if (msg.type === 'offer') {
+            // Phone's initial offer (normal negotiation flow)
+            await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+            // ICE trickle: remote desc is now set — drain any candidates that arrived early
+            remoteDescSet = true;
+            for (const c of pendingIceCandidates) {
+                await pc.addIceCandidate(c).catch(e => console.warn('addIceCandidate(queued):', e));
+            }
+            pendingIceCandidates = [];
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            sigWs.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+        } else if (msg.type === 'answer') {
+            // Phone answered our intercom re-offer — complete the negotiation
+            await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(e =>
+                console.warn('setRemoteDescription(answer) failed:', e)
+            );
+            // Drain any candidates queued while awaiting this answer too
+            remoteDescSet = true;
+            for (const c of pendingIceCandidates) {
+                await pc.addIceCandidate(c).catch(() => {});
+            }
+            pendingIceCandidates = [];
+        } else if (msg.type === 'ice-candidate' && msg.candidate) {
+            // ICE trickle: queue candidates that arrive before remote desc is set
+            if (remoteDescSet) {
+                await pc.addIceCandidate(msg.candidate).catch(() => {});
+            } else {
+                pendingIceCandidates.push(msg.candidate);
+            }
+        } else if (msg.type === 'waiting') {
+            setStatus('Waiting for phone to connect…');
+        } else if (msg.type === 'phone-ready') {
+            setStatus('Phone connected — negotiating…');
+            // ── PRIMARY FIX ──────────────────────────────────────────────────
+            // The server sends phone-ready to the browser. The phone's WebRTCEngine
+            // only calls createAndSendOffer() when IT receives {"type":"phone-ready"}.
+            // We must relay it back: browser → server → phone, so the phone knows
+            // a browser is waiting and triggers the WebRTC offer.
+            if (sigWs && sigWs.readyState === WebSocket.OPEN) {
+                sigWs.send(JSON.stringify({ type: 'phone-ready' }));
+            }
+        } else if (msg.type === 'peer-left') {
+            setStatus('Phone disconnected — waiting for reconnect…', 'warn');
+            webrtcReady = false;
+            remoteDescSet = false;
+            pendingIceCandidates = [];
+            if (intercomActive) stopIntercom();
+            // Keep pc alive so the next phone-ready / offer can reuse it.
+            // The phone will renegotiate from scratch when it reconnects.
+        }
+    };
+    sigWs.onerror = () => {};
+    sigWs.onclose = () => { if (!webrtcReady) fallbackToWebSocket(); };
+
+    // Timeout: 15 s gives 6 STUN servers enough time to complete gathering.
+    // 8 s was too tight with multiple servers probing in parallel.
+    webrtcTimeout = setTimeout(() => {
+        if (!webrtcReady) { setStatus('WebRTC timed out — switching to WebSocket', 'warn'); fallbackToWebSocket(); }
+    }, 15000);
+    setTransport('negotiating');
+    setStatus('WebRTC signaling…');
+    // Phase 4: open data channel so server broadcasts (transportStatus, feature_flags) arrive
+    // in WebRTC mode — audio flows via RTCPeerConnection, data via /listen.
+    openDataWs();
+    return true;
+}
+
+// ── WebSocket fallback path ───────────────────────────────────────────────────
+function fallbackToWebSocket() {
+    if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+    if (sigWs) { try { sigWs.close(); } catch (_) {} sigWs = null; }
+    // FIX: reset source node ref and playback clock when switching path.
+    if (rtcSourceNode) { try { rtcSourceNode.disconnect(); } catch (_) {} rtcSourceNode = null; }
+    playbackHead = 0;
+    // Phase 4: close the WebRTC-mode data channel — connectLegacyWs() opens
+    // its own /listen socket that handles both audio frames AND data messages,
+    // so keeping dataWs open would create a duplicate /listen connection.
+    closeDataWs();
+    setTransport('websocket_relay');
+    setStatus('Connecting via WebSocket…');
+    connectLegacyWs();
+}
+
+function connectLegacyWs() {
+    if (!streamId) return;
+    audioWs = new WebSocket(`${wsBase}/listen?id=${encodeURIComponent(streamId)}`);
+    audioWs.binaryType = 'arraybuffer';
+    // FIX: clear any existing drain interval before creating a new one.
+    // Previously, each reconnect called setInterval without clearing the old one,
+    // so after N reconnects there were N concurrent drain loops → crackling.
+    clearInterval(drainIntervalId);
+    drainIntervalId = setInterval(drainJitter, 10); // high-accuracy drain loop independent of onmessage rate
+
+    audioWs.onmessage = ({ data }) => {
+        if (typeof data === 'string') {
+            const msg = JSON.parse(data);
+            if (msg.type === 'codec') { codecConfig = msg; initDecoder(); }
+            else if (msg.type === 'status' && msg.streamingActive) {
+                setTransport('websocket_relay');
+                setStatus('Live — WebSocket Relay', 'live');
+            }
+            else if (msg.type === 'transportStatus' || msg.type === 'feature_flags') {
+                // Phase 4: delegate to shared data-message handler
+                handleDataMsg(msg);
+            }
+            return;
+        }
+        enqueueFrame(data);
+    };
+
+    audioWs.onclose = () => {
+        setStatus('Reconnecting…', 'warn');
+        setTimeout(connectLegacyWs, 2000);
+    };
+    audioWs.onerror = () => {};
+}
+
+// ── WebCodecs Opus decoder (legacy WS path) ───────────────────────────────────
+function initDecoder() {
+    if (!codecConfig || !window.AudioDecoder) return;
+    ensureAudioCtx();
+
+    // FIX: reset the playback scheduling clock whenever the decoder is (re)initialised
+    // so we never schedule into the past after a reconnect/codec-change.
+    playbackHead = 0;
+
+    if (audioDecoder && audioDecoder.state !== 'closed') {
+        try { audioDecoder.close(); } catch (_) {}
+    }
+
+    audioDecoder = new AudioDecoder({
+        output: decoded => {
+            // FIX: AudioData.copyTo() must use a two-step call; the one-liner
+            // passed undefined to copyToChannel() producing silence.
+            const buf = audioCtx.createBuffer(
+                decoded.numberOfChannels, decoded.numberOfFrames, decoded.sampleRate);
+            for (let c = 0; c < decoded.numberOfChannels; c++) {
+                const plane = new Float32Array(decoded.numberOfFrames);
+                decoded.copyTo(plane, { planeIndex: c });
+                buf.copyToChannel(plane, c);
+            }
+            decoded.close(); // free WebCodecs memory immediately after copy
+
+            // FIX: schedule each frame to start exactly where the previous one ended,
+            // using a small lookahead (30 ms) above currentTime so the AudioContext
+            // has time to schedule it without gaps.
+            // The old code used audioCtx.currentTime for EVERY frame, so two frames
+            // decoded back-to-back were both scheduled to "now" — they overlapped
+            // (crackling) and subsequent frames were delayed (stuttering).
+            const LOOKAHEAD_S = 0.030; // 30 ms scheduling headroom
+            const now = audioCtx.currentTime + LOOKAHEAD_S;
+            // If playbackHead has fallen behind (e.g. after a pause or reconnect),
+            // snap it forward to now so we don't schedule a burst of catch-up frames.
+            if (playbackHead < now) playbackHead = now;
+
+            const src = audioCtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(gainNode);
+            src.start(playbackHead);
+            playbackHead += buf.duration; // advance clock by exactly one frame duration
+        },
+        error: e => console.warn('AudioDecoder error:', e),
+    });
+    audioDecoder.configure({
+        codec: 'opus',
+        sampleRate: codecConfig.sampleRate || 48000,
+        numberOfChannels: codecConfig.channels || 1,
+    });
+}
+
+function drainJitter() {
+    if (!audioDecoder || audioDecoder.state === 'closed') return;
+    const now = performance.now();
+    while (jitterBuf.length && now - jitterBuf[0].ts >= jitterMs) {
+        const { ab } = jitterBuf.shift();
+        audioDecoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: 0, data: ab }));
+    }
+}
+
+function enqueueFrame(ab) {
+    jitterBuf.push({ ab, ts: performance.now() });
+    drainJitter();
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+async function init() {
+    if (!streamId) { setStatus('No ?id= in URL. Open from the dashboard.', 'err'); return; }
+    const hasWebRTC = !!(window.RTCPeerConnection && window.RTCSessionDescription);
+    if (hasWebRTC) {
+        await startWebRTC();
+    } else {
+        setStatus('WebRTC not supported — using WebSocket', 'warn');
+        fallbackToWebSocket();
+    }
+}
+init();
+</script>
+</body>
+</html>
